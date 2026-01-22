@@ -1,10 +1,22 @@
-.PHONY: help dev db-pull-data db-reset db-push db-status
+.PHONY: help run-dev run-dev-clean install build db-pull-data db-reset db-push db-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-dev: ## Start local development server
+# Development commands (for `run dev` and `run dev clean`)
+run-dev: ## Start local development server
 	pnpm dev
+
+run-dev-clean: ## Clean build artifacts and start fresh
+	rm -rf .next node_modules
+	pnpm install
+	pnpm dev
+
+install: ## Install dependencies
+	pnpm install
+
+build: ## Build for production
+	pnpm build
 
 # Database commands
 db-pull-data: ## Pull data from remote Supabase to local database
