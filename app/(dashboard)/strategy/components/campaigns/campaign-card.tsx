@@ -33,7 +33,7 @@ export function CampaignCard({ campaign, onEdit, onDelete }: CampaignCardProps) 
       : null;
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden pb-4 pt-0">
       {/* Color bar */}
       <div className="h-1" style={{ backgroundColor: campaign.color }} />
 

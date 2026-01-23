@@ -39,7 +39,7 @@ export function IdeaCard({
   const canConvert = idea.status === "approved";
 
   return (
-    <Card className="transition-shadow hover:shadow-md">
+    <Card className="py-0 transition-shadow hover:shadow-md">
       <CardContent className="p-4">
         <div className="flex gap-3">
           {/* Vote buttons */}
