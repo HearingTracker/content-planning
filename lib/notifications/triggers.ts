@@ -1,7 +1,9 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { sendPushNotificationToMany } from "./send-push";
+import { sendNotificationEmail } from "@/lib/email/send";
 import type { NotificationType, EventPreferences } from "./types";
 
 interface NotifyOptions {
@@ -19,6 +21,7 @@ interface NotifyOptions {
 interface UserPrefs {
   shouldNotify: boolean;
   browserEnabled: boolean;
+  emailEnabled: boolean;
 }
 
 async function getUserNotificationPrefs(
@@ -29,17 +32,17 @@ async function getUserNotificationPrefs(
 
   const { data: prefs } = await supabase
     .from("notification_preferences")
-    .select("notifications_enabled, browser_enabled, event_preferences")
+    .select("notifications_enabled, browser_enabled, email_enabled, event_preferences")
     .eq("user_id", userId)
     .single();
 
   if (!prefs) {
     // Default to true if no preferences exist
-    return { shouldNotify: true, browserEnabled: true };
+    return { shouldNotify: true, browserEnabled: true, emailEnabled: true };
   }
 
   if (!prefs.notifications_enabled) {
-    return { shouldNotify: false, browserEnabled: false };
+    return { shouldNotify: false, browserEnabled: false, emailEnabled: false };
   }
 
   const eventPrefs = prefs.event_preferences as EventPreferences | null;
@@ -48,6 +51,7 @@ async function getUserNotificationPrefs(
   return {
     shouldNotify: eventEnabled,
     browserEnabled: prefs.browser_enabled && eventEnabled,
+    emailEnabled: prefs.email_enabled && eventEnabled,
   };
 }
 
@@ -61,6 +65,7 @@ async function createNotifications(options: NotifyOptions): Promise<void> {
   // Check preferences for each recipient and filter
   const recipientsWithPermission: string[] = [];
   const recipientsForPush: string[] = [];
+  const recipientsForEmail: string[] = [];
 
   for (const recipientId of recipientsToNotify) {
     const prefs = await getUserNotificationPrefs(recipientId, options.notificationType);
@@ -68,6 +73,9 @@ async function createNotifications(options: NotifyOptions): Promise<void> {
       recipientsWithPermission.push(recipientId);
       if (prefs.browserEnabled) {
         recipientsForPush.push(recipientId);
+      }
+      if (prefs.emailEnabled) {
+        recipientsForEmail.push(recipientId);
       }
     }
   }
@@ -94,21 +102,57 @@ async function createNotifications(options: NotifyOptions): Promise<void> {
     return;
   }
 
+  const actionUrl = options.entityType === "content_item" && options.entityId
+    ? `/content?item=${options.entityId}`
+    : "/";
+
   // Send push notifications to users who have browser notifications enabled
   if (recipientsForPush.length > 0) {
-    const pushUrl = options.entityType === "content_item" && options.entityId
-      ? `/content?item=${options.entityId}`
-      : "/";
-
     sendPushNotificationToMany(recipientsForPush, {
       title: options.title,
       body: options.body,
-      url: pushUrl,
+      url: actionUrl,
       tag: `${options.notificationType}-${options.entityId || "general"}`,
     }).catch((err) => {
       console.error("Error sending push notifications:", err);
     });
   }
+
+  // Send email notifications to users who have email notifications enabled
+  if (recipientsForEmail.length > 0) {
+    sendEmailNotifications(recipientsForEmail, options.title, options.body, actionUrl).catch(
+      (err) => {
+        console.error("Error sending email notifications:", err);
+      }
+    );
+  }
+}
+
+/**
+ * Send email notifications to multiple users
+ */
+async function sendEmailNotifications(
+  userIds: string[],
+  title: string,
+  body?: string,
+  actionUrl?: string
+): Promise<void> {
+  const { getUserEmails } = await import("@/lib/supabase/admin");
+
+  const emailMap = await getUserEmails(userIds);
+
+  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://content.hearingtracker.com";
+  const fullActionUrl = actionUrl ? `${baseUrl}${actionUrl}` : baseUrl;
+
+  await Promise.all(
+    Array.from(emailMap.entries()).map(async ([, email]) => {
+      try {
+        await sendNotificationEmail(email, title, body || "", fullActionUrl);
+      } catch (err) {
+        console.error(`[Email] Error sending to ${email}:`, err);
+      }
+    })
+  );
 }
 
 /**

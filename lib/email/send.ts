@@ -1,18 +1,16 @@
 import type { EmailMessage, EmailResult } from "./types";
 
+const NEWS_API_URL = "https://news.hearingtracker.com/api";
+const NEWS_API_KEY = process.env.NEWS_API_KEY;
+
+// Template ID for notification emails (shared with main site)
+const NOTIFICATION_TEMPLATE_ID = "f8084938-7e33-4398-ac14-ca2992ed2c8a";
+
 /**
- * Send an email using the configured email service provider.
+ * Send an email using the HearingTracker news API (which uses AWS SES).
  *
- * TODO: Integrate with an email service provider (ESP):
- * - Resend (recommended): https://resend.com
- * - SendGrid: https://sendgrid.com
- * - Amazon SES: https://aws.amazon.com/ses
- * - Postmark: https://postmarkapp.com
- *
- * Environment variables to add when integrating:
- * - EMAIL_PROVIDER: "resend" | "sendgrid" | "ses" | "postmark"
- * - EMAIL_API_KEY: Your ESP API key
- * - EMAIL_FROM: Default from address (e.g., "notifications@yourdomain.com")
+ * Environment variables required:
+ * - NEWS_API_KEY: API key for news.hearingtracker.com
  */
 export async function sendEmail(message: EmailMessage): Promise<EmailResult> {
   // Log in development instead of sending
@@ -28,39 +26,55 @@ export async function sendEmail(message: EmailMessage): Promise<EmailResult> {
     };
   }
 
-  // TODO: Implement actual email sending
-  // Example with Resend:
-  //
-  // import { Resend } from "resend";
-  // const resend = new Resend(process.env.RESEND_API_KEY);
-  //
-  // try {
-  //   const { data, error } = await resend.emails.send({
-  //     from: message.from || process.env.EMAIL_FROM || "onboarding@resend.dev",
-  //     to: message.to,
-  //     subject: message.subject,
-  //     text: message.text,
-  //     html: message.html,
-  //   });
-  //
-  //   if (error) {
-  //     return { success: false, error: error.message };
-  //   }
-  //
-  //   return { success: true, messageId: data?.id };
-  // } catch (err) {
-  //   return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
-  // }
+  if (!NEWS_API_KEY) {
+    console.warn("[Email] NEWS_API_KEY not configured");
+    return {
+      success: false,
+      error: "Email provider not configured",
+    };
+  }
 
-  console.warn(
-    "[Email] Email sending not configured. Message would be sent to:",
-    message.to
-  );
+  try {
+    const response = await fetch(`${NEWS_API_URL}/emails/send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${NEWS_API_KEY}`,
+      },
+      body: JSON.stringify({
+        template_id: NOTIFICATION_TEMPLATE_ID,
+        to: message.to,
+        subject: message.subject,
+        from_name: "HearingTracker Content",
+        from_email: message.from || "notifications@hearingtracker.com",
+        reply_to_email: message.replyTo,
+        variables: {
+          html: message.html || message.text || "",
+        },
+      }),
+    });
 
-  return {
-    success: false,
-    error: "Email provider not configured",
-  };
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error("[Email] Send error:", response.status, errorData);
+      return {
+        success: false,
+        error: `Failed to send email: ${response.status}`,
+      };
+    }
+
+    const data = await response.json();
+    return {
+      success: true,
+      messageId: data.id || `sent-${Date.now()}`,
+    };
+  } catch (err) {
+    console.error("[Email] Error sending email:", err);
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Unknown error",
+    };
+  }
 }
 
 /**
