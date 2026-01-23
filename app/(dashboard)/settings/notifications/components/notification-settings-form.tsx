@@ -202,31 +202,29 @@ export function NotificationSettingsForm({
         </CardContent>
       </Card>
 
-      <Card className="opacity-60">
+      <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Mail className="size-5" />
             Email Notifications
-            <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-xs font-normal text-muted-foreground">
-              Coming Soon
-            </span>
           </CardTitle>
           <CardDescription>
-            Receive notification summaries via email
+            Receive notifications via email
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <Label htmlFor="email-enabled" className="text-muted-foreground">Email Notifications</Label>
+              <Label htmlFor="email-enabled">Email Notifications</Label>
               <p className="text-sm text-muted-foreground">
                 Get important notifications delivered to your inbox
               </p>
             </div>
             <Checkbox
               id="email-enabled"
-              checked={false}
-              disabled
+              checked={preferences.email_enabled}
+              onCheckedChange={() => handleToggle("email_enabled")}
+              disabled={isPending || !preferences.notifications_enabled}
             />
           </div>
         </CardContent>
