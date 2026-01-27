@@ -7,6 +7,9 @@ const nextConfig: NextConfig = {
       "@radix-ui/react-icons",
       "@radix-ui/react-slot",
     ],
+    serverActions: {
+      bodySizeLimit: "50mb",
+    },
   },
   images: {
     remotePatterns: [

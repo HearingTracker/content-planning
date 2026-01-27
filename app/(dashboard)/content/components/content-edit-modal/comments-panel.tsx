@@ -4,8 +4,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Search, MessageSquare } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/query-keys";
 import type { Comment, User } from "../types";
-import { useComments, useAddComment, useDeleteComment, useUpdateComment } from "@/hooks/queries";
+import { useComments, useDeleteComment, useUpdateComment } from "@/hooks/queries";
 import { CommentMessage } from "../comment-message";
 import { CommentInput } from "../comment-input";
 
@@ -26,10 +28,10 @@ export function CommentsPanel({
 }: CommentsPanelProps) {
   const [highlightedId, setHighlightedId] = useState<number | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
 
   // React Query hooks
   const { data: comments = [], isLoading, search, setSearch } = useComments(contentItemId);
-  const addCommentMutation = useAddComment();
   const deleteCommentMutation = useDeleteComment();
   const updateCommentMutation = useUpdateComment();
 
@@ -51,6 +53,15 @@ export function CommentsPanel({
   }, [highlightCommentId, comments.length]);
 
   const handleCommentAdded = useCallback((comment: Comment) => {
+    // Add comment to cache for immediate display
+    if (contentItemId) {
+      queryClient.setQueryData<Comment[]>(
+        queryKeys.comments.list(contentItemId, undefined),
+        (old) => (old ? [...old, comment] : [comment])
+      );
+      // Invalidate to ensure consistency with server
+      queryClient.invalidateQueries({ queryKey: queryKeys.comments.all });
+    }
     // Scroll to bottom when a new comment is added
     setTimeout(() => {
       const scrollArea = scrollAreaRef.current?.querySelector(
@@ -60,7 +71,7 @@ export function CommentsPanel({
         scrollArea.scrollTop = scrollArea.scrollHeight;
       }
     }, 100);
-  }, []);
+  }, [contentItemId, queryClient]);
 
   const handleCommentDeleted = useCallback(async (commentId: number) => {
     await deleteCommentMutation.mutateAsync(commentId);
