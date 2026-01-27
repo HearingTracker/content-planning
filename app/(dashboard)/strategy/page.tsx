@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQueryStates, parseAsString } from "nuqs";
 import { Plus } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,23 +15,25 @@ import { IdeaFormDialog } from "./components/ideas/idea-form-dialog";
 import { BriefTable } from "./components/briefs/brief-table";
 import { BriefFormDialog } from "./components/briefs/brief-form-dialog";
 import {
-  getCampaigns,
-  createCampaign,
-  updateCampaign,
-  deleteCampaign,
-  quickCreateCampaign,
-  getIdeas,
-  createIdea,
-  updateIdea,
-  deleteIdea,
-  voteOnIdea,
-  convertIdeaToBrief,
-  getBriefs,
-  createBrief,
-  updateBrief,
-  deleteBrief,
-  getStrategyFilterOptions,
-} from "./actions";
+  useCampaigns,
+  useCreateCampaign,
+  useUpdateCampaign,
+  useDeleteCampaign,
+  useQuickCreateCampaign,
+  useIdeas,
+  useCreateIdea,
+  useUpdateIdea,
+  useDeleteIdea,
+  useVoteOnIdea,
+  useConvertIdeaToBrief,
+  useBriefs,
+  useCreateBrief,
+  useUpdateBrief,
+  useDeleteBrief,
+  useStrategyFilterOptions,
+  useCurrentUser,
+  useCanDelete,
+} from "@/hooks/queries";
 import type {
   CampaignSummary,
   CampaignInput,
@@ -40,7 +41,6 @@ import type {
   ContentIdeaInput,
   ContentBrief,
   ContentBriefInput,
-  StrategyFilterOptions,
   StrategyTab,
 } from "./components/types";
 
@@ -53,42 +53,48 @@ export default function StrategyPage() {
     history: "push",
   });
 
-  const [campaigns, setCampaigns] = useState<CampaignSummary[]>([]);
-  const [ideas, setIdeas] = useState<ContentIdea[]>([]);
-  const [briefs, setBriefs] = useState<ContentBrief[]>([]);
-  const [filterOptions, setFilterOptions] = useState<StrategyFilterOptions>({
-    contentTypes: [],
-    campaigns: [],
-  });
-  const [localCampaigns, setLocalCampaigns] = useState<
-    Array<{ id: number; name: string; color: string }>
-  >([]);
-  const [userId, setUserId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // React Query hooks
+  const { data: campaigns = [], isLoading: isCampaignsLoading } = useCampaigns();
+  const { data: ideas = [], isLoading: isIdeasLoading } = useIdeas();
+  const { data: briefs = [], isLoading: isBriefsLoading } = useBriefs();
+  const { data: filterOptions = { contentTypes: [], campaigns: [] } } = useStrategyFilterOptions();
+  const { data: user } = useCurrentUser();
 
-  // Sync localCampaigns with filterOptions
-  useEffect(() => {
-    setLocalCampaigns(filterOptions.campaigns);
-  }, [filterOptions.campaigns]);
+  // Mutations
+  const createCampaignMutation = useCreateCampaign();
+  const updateCampaignMutation = useUpdateCampaign();
+  const deleteCampaignMutation = useDeleteCampaign();
+  const quickCreateCampaignMutation = useQuickCreateCampaign();
+  const createIdeaMutation = useCreateIdea();
+  const updateIdeaMutation = useUpdateIdea();
+  const deleteIdeaMutation = useDeleteIdea();
+  const voteOnIdeaMutation = useVoteOnIdea();
+  const convertIdeaToBriefMutation = useConvertIdeaToBrief();
+  const createBriefMutation = useCreateBrief();
+  const updateBriefMutation = useUpdateBrief();
+  const deleteBriefMutation = useDeleteBrief();
+
+  const userId = user?.id || null;
+  const isLoading = isCampaignsLoading || isIdeasLoading || isBriefsLoading;
+  const canEdit = useCanDelete(); // editors and admins can delete/convert
+
+  // Local campaigns for dropdowns (synced from filter options)
+  const localCampaigns = useMemo(
+    () => filterOptions.campaigns,
+    [filterOptions.campaigns]
+  );
 
   // Quick create campaign handler for inline creation in dropdowns
-  const handleQuickCreateCampaign = async (name: string): Promise<string | null> => {
-    const result = await quickCreateCampaign(name);
-    if (result.success && result.id) {
-      const newCampaign = {
-        id: result.id,
-        name,
-        color: result.color || "#6366f1",
-      };
-      setLocalCampaigns((prev) =>
-        [...prev, newCampaign].sort((a, b) => a.name.localeCompare(b.name))
-      );
-      // Also refresh the data to get updated campaign list
-      fetchData();
-      return result.id.toString();
-    }
-    return null;
-  };
+  const handleQuickCreateCampaign = useCallback(
+    async (name: string): Promise<string | null> => {
+      const result = await quickCreateCampaignMutation.mutateAsync(name);
+      if (result.success && result.id) {
+        return result.id.toString();
+      }
+      return null;
+    },
+    [quickCreateCampaignMutation]
+  );
 
   // Dialog states
   const [campaignDialogOpen, setCampaignDialogOpen] = useState(false);
@@ -107,43 +113,6 @@ export default function StrategyPage() {
   const [deletingBrief, setDeletingBrief] = useState<ContentBrief | null>(null);
 
   const activeTab = urlState.tab as StrategyTab;
-
-  // Get user ID
-  useEffect(() => {
-    const getUser = async () => {
-      const supabase = createClient();
-      const { data } = await supabase.auth.getUser();
-      setUserId(data.user?.id || null);
-    };
-    getUser();
-  }, []);
-
-  // Fetch filter options
-  useEffect(() => {
-    const fetchOptions = async () => {
-      const options = await getStrategyFilterOptions();
-      setFilterOptions(options);
-    };
-    fetchOptions();
-  }, []);
-
-  // Fetch all data
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    const [campaignsData, ideasData, briefsData] = await Promise.all([
-      getCampaigns(),
-      getIdeas(),
-      getBriefs(),
-    ]);
-    setCampaigns(campaignsData);
-    setIdeas(ideasData);
-    setBriefs(briefsData);
-    setIsLoading(false);
-  }, []);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
 
   // Tab counts
   const counts = useMemo(
@@ -174,17 +143,15 @@ export default function StrategyPage() {
 
   const handleCampaignSubmit = async (input: CampaignInput) => {
     if (editingCampaign) {
-      await updateCampaign(editingCampaign.campaign_id, input);
+      await updateCampaignMutation.mutateAsync({ id: editingCampaign.campaign_id, input });
     } else {
-      await createCampaign(input);
+      await createCampaignMutation.mutateAsync(input);
     }
-    await fetchData();
   };
 
   const handleConfirmDeleteCampaign = async () => {
     if (deletingCampaign) {
-      await deleteCampaign(deletingCampaign.campaign_id);
-      await fetchData();
+      await deleteCampaignMutation.mutateAsync(deletingCampaign.campaign_id);
       setDeleteCampaignDialogOpen(false);
       setDeletingCampaign(null);
     }
@@ -208,31 +175,27 @@ export default function StrategyPage() {
 
   const handleIdeaSubmit = async (input: ContentIdeaInput) => {
     if (editingIdea) {
-      await updateIdea(editingIdea.id, input);
+      await updateIdeaMutation.mutateAsync({ id: editingIdea.id, input });
     } else {
-      await createIdea(input);
+      await createIdeaMutation.mutateAsync(input);
     }
-    await fetchData();
   };
 
   const handleConfirmDeleteIdea = async () => {
     if (deletingIdea) {
-      await deleteIdea(deletingIdea.id);
-      await fetchData();
+      await deleteIdeaMutation.mutateAsync(deletingIdea.id);
       setDeleteIdeaDialogOpen(false);
       setDeletingIdea(null);
     }
   };
 
   const handleVoteOnIdea = async (ideaId: number, vote: 1 | -1) => {
-    await voteOnIdea(ideaId, vote);
-    await fetchData();
+    await voteOnIdeaMutation.mutateAsync({ ideaId, vote });
   };
 
   const handleConvertIdeaToBrief = async (idea: ContentIdea) => {
-    const result = await convertIdeaToBrief(idea.id);
+    const result = await convertIdeaToBriefMutation.mutateAsync(idea.id);
     if (result.success) {
-      await fetchData();
       setUrlState({ tab: "briefs" });
     }
   };
@@ -259,17 +222,15 @@ export default function StrategyPage() {
 
   const handleBriefSubmit = async (input: ContentBriefInput) => {
     if (editingBrief) {
-      await updateBrief(editingBrief.id, input);
+      await updateBriefMutation.mutateAsync({ id: editingBrief.id, input });
     } else {
-      await createBrief(input);
+      await createBriefMutation.mutateAsync(input);
     }
-    await fetchData();
   };
 
   const handleConfirmDeleteBrief = async () => {
     if (deletingBrief) {
-      await deleteBrief(deletingBrief.id);
-      await fetchData();
+      await deleteBriefMutation.mutateAsync(deletingBrief.id);
       setDeleteBriefDialogOpen(false);
       setDeletingBrief(null);
     }
@@ -277,7 +238,6 @@ export default function StrategyPage() {
 
   const handleCreateContentFromBrief = (brief: ContentBrief) => {
     // Navigate to content page with brief pre-selected
-    // For now, just show a message
     window.location.href = `/content?brief_id=${brief.id}`;
   };
 
@@ -287,7 +247,7 @@ export default function StrategyPage() {
       case "campaigns":
         return "New campaign";
       case "ideas":
-        return "Submit idea";
+        return "Submit pitch";
       case "briefs":
         return "New brief";
     }
@@ -316,7 +276,7 @@ export default function StrategyPage() {
             Strategy
           </h1>
           <p className="text-sm text-muted-foreground">
-            Plan campaigns, collect ideas, and create content briefs
+            Plan campaigns, collect pitches, and create content briefs
           </p>
         </div>
         <Button onClick={handleCreate}>
@@ -355,8 +315,8 @@ export default function StrategyPage() {
           ideas={ideas}
           userId={userId}
           onEdit={handleEditIdea}
-          onDelete={handleDeleteIdeaClick}
-          onConvertToBrief={handleConvertIdeaToBrief}
+          onDelete={canEdit ? handleDeleteIdeaClick : undefined}
+          onConvertToBrief={canEdit ? handleConvertIdeaToBrief : undefined}
           onVote={handleVoteOnIdea}
           onCreateNew={handleCreateIdea}
         />
@@ -364,9 +324,9 @@ export default function StrategyPage() {
         <BriefTable
           data={briefs}
           onEdit={handleEditBrief}
-          onDelete={handleDeleteBriefClick}
+          onDelete={canEdit ? handleDeleteBriefClick : undefined}
           onView={handleViewBrief}
-          onCreateContent={handleCreateContentFromBrief}
+          onCreateContent={canEdit ? handleCreateContentFromBrief : undefined}
           onCreateNew={handleCreateBrief}
         />
       )}
@@ -401,7 +361,7 @@ export default function StrategyPage() {
       <ConfirmDialog
         open={deleteIdeaDialogOpen}
         onOpenChange={setDeleteIdeaDialogOpen}
-        title="Delete idea"
+        title="Delete pitch"
         description={`Are you sure you want to delete "${deletingIdea?.title}"?`}
         confirmLabel="Delete"
         onConfirm={handleConfirmDeleteIdea}

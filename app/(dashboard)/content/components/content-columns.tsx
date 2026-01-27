@@ -12,7 +12,7 @@ import type { ContentItem } from "./types";
 
 interface ColumnActions {
   onEdit: (item: ContentItem) => void;
-  onDelete: (item: ContentItem) => void;
+  onDelete?: (item: ContentItem) => void;
   onView: (item: ContentItem) => void;
   onEditAssignments?: (item: ContentItem) => void;
   onEditDates?: (item: ContentItem) => void;

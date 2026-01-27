@@ -19,8 +19,8 @@ interface IdeaCardProps {
   idea: ContentIdea;
   userId: string | null;
   onEdit: () => void;
-  onDelete: () => void;
-  onConvertToBrief: () => void;
+  onDelete?: () => void;
+  onConvertToBrief?: () => void;
   onVote: (vote: 1 | -1) => void;
 }
 
@@ -36,7 +36,7 @@ export function IdeaCard({
     ? (idea.votes.find((v) => v.user_id === userId)?.vote as 1 | -1 | null) ?? null
     : null;
 
-  const canConvert = idea.status === "approved";
+  const canConvert = !!onConvertToBrief;
 
   return (
     <Card className="py-0 transition-shadow hover:shadow-md">
@@ -80,11 +80,15 @@ export function IdeaCard({
                       Convert to Brief
                     </DropdownMenuItem>
                   )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={onDelete} className="text-destructive">
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Delete
-                  </DropdownMenuItem>
+                  {onDelete && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={onDelete} variant="destructive">
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>

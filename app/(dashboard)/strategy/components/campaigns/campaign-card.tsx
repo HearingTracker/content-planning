@@ -1,7 +1,7 @@
 "use client";
 
 import { format } from "date-fns";
-import { Calendar, FileText, Lightbulb, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { Calendar, ClipboardList, FileText, Lightbulb, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -90,16 +90,7 @@ export function CampaignCard({ campaign, onEdit, onDelete }: CampaignCardProps) 
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 gap-3 pt-2 border-t">
-          <div className="flex items-center gap-2">
-            <div className="rounded-md bg-muted p-1.5">
-              <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-            </div>
-            <div>
-              <p className="text-sm font-medium">{campaign.total_content_items}</p>
-              <p className="text-xs text-muted-foreground">Content</p>
-            </div>
-          </div>
+        <div className="grid grid-cols-3 gap-3 pt-2 border-t">
           <div className="flex items-center gap-2">
             <div className="rounded-md bg-muted p-1.5">
               <Lightbulb className="h-3.5 w-3.5 text-muted-foreground" />
@@ -107,6 +98,24 @@ export function CampaignCard({ campaign, onEdit, onDelete }: CampaignCardProps) 
             <div>
               <p className="text-sm font-medium">{campaign.total_ideas}</p>
               <p className="text-xs text-muted-foreground">Ideas</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="rounded-md bg-muted p-1.5">
+              <ClipboardList className="h-3.5 w-3.5 text-muted-foreground" />
+            </div>
+            <div>
+              <p className="text-sm font-medium">{campaign.total_briefs}</p>
+              <p className="text-xs text-muted-foreground">Briefs</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="rounded-md bg-muted p-1.5">
+              <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+            </div>
+            <div>
+              <p className="text-sm font-medium">{campaign.total_content_items}</p>
+              <p className="text-xs text-muted-foreground">Content</p>
             </div>
           </div>
         </div>

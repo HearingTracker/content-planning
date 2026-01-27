@@ -22,7 +22,7 @@ import type { ContentItem } from "./types";
 interface ContentDataTableProps {
   data: ContentItem[];
   onEdit: (item: ContentItem) => void;
-  onDelete: (item: ContentItem) => void;
+  onDelete?: (item: ContentItem) => void;
   onView: (item: ContentItem) => void;
   onCreateNew: () => void;
   onEditAssignments?: (item: ContentItem) => void;

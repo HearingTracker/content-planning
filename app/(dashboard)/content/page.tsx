@@ -22,18 +22,20 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { QuickEditAssignments } from "./components/quick-edit-assignments";
 import { QuickEditDates } from "./components/quick-edit-dates";
 import {
-  getContentItems,
-  getFilterOptions,
-  getCalendarItems,
-  deleteContentItem,
-  changeWorkflowStatus,
-} from "./actions";
+  useContentItems,
+  useContentFilterOptions,
+  useDeleteContentItem,
+  useReorderContentItems,
+  useCalendarItems,
+  useCanDelete,
+} from "@/hooks/queries";
+import { getBrief } from "../strategy/actions";
 import type {
   ContentItem,
   ContentFilters,
-  ContentFilterOptions,
   ContentView,
   CalendarItem,
+  ContentItemInput,
 } from "./components/types";
 
 // URL state parsers
@@ -47,6 +49,7 @@ const filterParsers = {
   priorities: parseAsArrayOf(parseAsString).withDefault([]),
   item: parseAsInteger,
   comment: parseAsInteger,
+  brief_id: parseAsInteger,
 };
 
 export default function ContentPage() {
@@ -54,16 +57,27 @@ export default function ContentPage() {
     history: "push",
   });
 
-  const [items, setItems] = useState<ContentItem[]>([]);
-  const [calendarItems, setCalendarItems] = useState<CalendarItem[]>([]);
-  const [filterOptions, setFilterOptions] = useState<ContentFilterOptions>({
-    statuses: [],
-    types: [],
-    campaigns: [],
-    users: [],
-  });
-  const [isLoading, setIsLoading] = useState(true);
   const [, startTransition] = useTransition();
+
+  // React Query hooks
+  const { data: items = [], isLoading, refetch: refetchItems } = useContentItems();
+  const { data: filterOptions = { statuses: [], types: [], campaigns: [], users: [] } } = useContentFilterOptions();
+  const deleteContentItemMutation = useDeleteContentItem();
+  const reorderContentItemsMutation = useReorderContentItems(filterOptions);
+
+  const view = urlState.view as ContentView;
+  const canDelete = useCanDelete();
+
+  // Calendar items - only fetch when in calendar view
+  const today = new Date();
+  const calendarStart = format(startOfMonth(today), "yyyy-MM-dd");
+  const calendarEnd = format(endOfMonth(today), "yyyy-MM-dd");
+  const [calendarRange, setCalendarRange] = useState({ start: calendarStart, end: calendarEnd });
+  const { data: calendarItems = [] } = useCalendarItems(
+    calendarRange.start,
+    calendarRange.end,
+    view === "calendar"
+  );
 
   // Dialog states
   const [editModalOpen, setEditModalOpen] = useState(false);
@@ -78,6 +92,9 @@ export default function ContentPage() {
   const [datesDialogOpen, setDatesDialogOpen] = useState(false);
   const [datesItem, setDatesItem] = useState<ContentItem | null>(null);
 
+  // Initial data for creating from brief
+  const [initialData, setInitialData] = useState<Partial<ContentItemInput> | null>(null);
+
   // Convert URL state to filters
   const filters: ContentFilters = useMemo(
     () => ({
@@ -91,39 +108,6 @@ export default function ContentPage() {
     [urlState]
   );
 
-  const view = urlState.view as ContentView;
-
-  // Fetch filter options on mount
-  useEffect(() => {
-    const fetchOptions = async () => {
-      const options = await getFilterOptions();
-      setFilterOptions(options);
-    };
-    fetchOptions();
-  }, []);
-
-  // Fetch content items
-  const fetchItems = useCallback(async () => {
-    setIsLoading(true);
-    const data = await getContentItems();
-    setItems(data);
-    setIsLoading(false);
-  }, []);
-
-  useEffect(() => {
-    fetchItems();
-  }, [fetchItems]);
-
-  // Fetch calendar items when view is calendar
-  useEffect(() => {
-    if (view === "calendar") {
-      const today = new Date();
-      const start = format(startOfMonth(today), "yyyy-MM-dd");
-      const end = format(endOfMonth(today), "yyyy-MM-dd");
-      getCalendarItems(start, end).then(setCalendarItems);
-    }
-  }, [view]);
-
   // Open modal from URL params (e.g., from notification link)
   useEffect(() => {
     if (urlState.item && items.length > 0 && !isLoading) {
@@ -135,12 +119,36 @@ export default function ContentPage() {
     }
   }, [urlState.item, items, isLoading]);
 
+  // Open modal to create from brief
+  useEffect(() => {
+    if (urlState.brief_id && !editModalOpen) {
+      getBrief(urlState.brief_id).then((brief) => {
+        if (brief) {
+          setInitialData({
+            title: brief.title,
+            content_type_id: brief.content_type?.id || null,
+            campaign_id: brief.campaign?.id || null,
+            notes: brief.notes,
+            brief_id: brief.id,
+          });
+          setEditingItem(null);
+          setEditModalOpen(true);
+        }
+        // Clear brief_id from URL
+        setUrlState({ brief_id: null });
+      });
+    }
+  }, [urlState.brief_id, editModalOpen, setUrlState]);
+
   // Clear URL params when modal closes
   const handleModalOpenChange = useCallback(
     (open: boolean) => {
       setEditModalOpen(open);
-      if (!open && urlState.item) {
-        setUrlState({ item: null, comment: null });
+      if (!open) {
+        if (urlState.item) {
+          setUrlState({ item: null, comment: null });
+        }
+        setInitialData(null);
       }
     },
     [urlState.item, setUrlState]
@@ -240,44 +248,23 @@ export default function ContentPage() {
   };
 
   const handleModalSave = async () => {
-    await fetchItems();
+    // React Query will automatically invalidate and refetch
   };
 
   const handleConfirmDelete = async () => {
     if (deletingItem) {
-      await deleteContentItem(deletingItem.id);
-      await fetchItems();
+      await deleteContentItemMutation.mutateAsync(deletingItem.id);
       setDeleteDialogOpen(false);
       setDeletingItem(null);
     }
   };
 
-  const handleStatusChange = async (itemId: number, newStatusId: number) => {
-    // Find the new status object
-    const newStatus = filterOptions.statuses.find((s) => s.id === newStatusId);
-    if (!newStatus) return;
-
-    // Optimistic update - update local state immediately
-    setItems((prevItems) =>
-      prevItems.map((item) =>
-        item.id === itemId
-          ? { ...item, workflow_status: newStatus }
-          : item
-      )
-    );
-
-    // Then update the server (don't await/refetch to avoid reload)
-    const result = await changeWorkflowStatus(itemId, newStatusId);
-
-    // If server update failed, revert by refetching
-    if (!result.success) {
-      await fetchItems();
-    }
+  const handleReorder = (updates: { id: number; display_order: number; workflow_status_id?: number }[]) => {
+    reorderContentItemsMutation.mutate(updates);
   };
 
   const handleCalendarMonthChange = async (start: string, end: string) => {
-    const items = await getCalendarItems(start, end);
-    setCalendarItems(items);
+    setCalendarRange({ start, end });
   };
 
   const handleCalendarItemClick = (item: CalendarItem) => {
@@ -310,6 +297,10 @@ export default function ContentPage() {
     // Open the edit modal - attachments are available in the tabs
     setEditingItem(item);
     setEditModalOpen(true);
+  };
+
+  const handleQuickEditSuccess = () => {
+    refetchItems();
   };
 
   // Count active filters
@@ -407,7 +398,7 @@ export default function ContentPage() {
         <ContentDataTable
           data={filteredItems}
           onEdit={handleEdit}
-          onDelete={handleDelete}
+          onDelete={canDelete ? handleDelete : undefined}
           onView={handleView}
           onCreateNew={handleCreateNew}
           onEditAssignments={handleEditAssignments}
@@ -420,12 +411,12 @@ export default function ContentPage() {
           items={filteredItems}
           statuses={filterOptions.statuses}
           onItemClick={handleView}
-          onStatusChange={handleStatusChange}
+          onReorder={handleReorder}
           onEditAssignments={handleEditAssignments}
           onEditDates={handleEditDates}
           onViewAttachments={handleViewAttachments}
           onViewComments={handleViewComments}
-          onDelete={handleDelete}
+          onDelete={canDelete ? handleDelete : undefined}
         />
       ) : (
         <ContentCalendar
@@ -443,6 +434,7 @@ export default function ContentPage() {
         filterOptions={filterOptions}
         onSave={handleModalSave}
         highlightCommentId={urlState.comment}
+        initialData={initialData}
       />
 
       {/* Delete Confirmation */}
@@ -463,7 +455,7 @@ export default function ContentPage() {
           onOpenChange={setAssignmentsDialogOpen}
           item={assignmentsItem}
           users={filterOptions.users}
-          onSuccess={fetchItems}
+          onSuccess={handleQuickEditSuccess}
         />
       )}
 
@@ -473,7 +465,7 @@ export default function ContentPage() {
           open={datesDialogOpen}
           onOpenChange={setDatesDialogOpen}
           item={datesItem}
-          onSuccess={fetchItems}
+          onSuccess={handleQuickEditSuccess}
         />
       )}
 

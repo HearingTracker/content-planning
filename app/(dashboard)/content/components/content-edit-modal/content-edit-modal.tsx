@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Loader2, FileText, Settings, Users, Calendar, Paperclip, MessageSquare, Package } from "lucide-react";
 import {
   Dialog,
@@ -9,8 +9,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
-import { createCampaign, updateContentItem, createContentItem } from "../../actions";
+import { createCampaign } from "../../actions";
+import { useAutoSave, useCreateContentItem } from "@/hooks/queries";
 import type {
   ContentItem,
   ContentFilterOptions,
@@ -38,6 +38,8 @@ interface ContentEditModalProps {
   onSave: () => void;
   currentUserId?: string;
   highlightCommentId?: number | null;
+  /** Initial data for pre-filling the form when creating from a brief */
+  initialData?: Partial<ContentItemInput> | null;
 }
 
 export function ContentEditModal({
@@ -48,12 +50,10 @@ export function ContentEditModal({
   onSave,
   currentUserId,
   highlightCommentId,
+  initialData,
 }: ContentEditModalProps) {
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [activeTab, setActiveTab] = useState("content");
   const [localCampaigns, setLocalCampaigns] = useState<CampaignSummary[]>(filterOptions.campaigns);
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [contentItemId, setContentItemId] = useState<number | null>(null);
 
   // Form state
@@ -79,6 +79,15 @@ export function ContentEditModal({
   // Pending state for new items
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [pendingLinks, setPendingLinks] = useState<ContentLinkInput[]>([]);
+
+  // Auto-save hook for existing items
+  const { scheduleAutoSave, flushAndInvalidate, saveStatus, cancelPending } = useAutoSave({
+    contentItemId,
+    debounceMs: 1000,
+  });
+
+  // Mutation hook for creating new items
+  const createContentItemMutation = useCreateContentItem();
 
   // Sync campaigns with filterOptions
   useEffect(() => {
@@ -111,17 +120,18 @@ export function ContentEditModal({
       } else {
         setContentItemId(null);
         setFormData({
-          title: "",
-          content_type_id: null,
-          workflow_status_id: null,
-          campaign_id: null,
-          priority: "medium",
-          due_date: null,
-          scheduled_date: null,
-          scheduled_time: null,
-          notes: null,
-          storyblok_url: null,
-          body: null,
+          title: initialData?.title || "",
+          content_type_id: initialData?.content_type_id || null,
+          workflow_status_id: initialData?.workflow_status_id || null,
+          campaign_id: initialData?.campaign_id || null,
+          priority: initialData?.priority || "medium",
+          due_date: initialData?.due_date || null,
+          scheduled_date: initialData?.scheduled_date || null,
+          scheduled_time: initialData?.scheduled_time || null,
+          notes: initialData?.notes || null,
+          storyblok_url: initialData?.storyblok_url || null,
+          body: initialData?.body || null,
+          brief_id: initialData?.brief_id || null,
         });
         setAttachments([]);
         setLinks([]);
@@ -129,53 +139,27 @@ export function ContentEditModal({
         setPendingFiles([]);
         setPendingLinks([]);
       }
-      setSaveStatus("idle");
       setActiveTab("content");
     }
-  }, [item, open]);
+  }, [item, open, initialData]);
 
-  // Handle form field changes
+  // Handle form field changes with auto-save
   const handleFormChange = useCallback((updates: Partial<ContentItemInput>) => {
     setFormData((prev) => ({ ...prev, ...updates }));
     // Trigger auto-save for existing items
     if (contentItemId) {
-      setSaveStatus("saving");
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-      saveTimeoutRef.current = setTimeout(() => {
-        handleAutoSave({ ...formData, ...updates });
-      }, 1000);
+      scheduleAutoSave(updates);
     }
-  }, [contentItemId, formData]);
+  }, [contentItemId, scheduleAutoSave]);
 
-  // Handle body (Editor.js) changes
+  // Handle body (Editor.js) changes with slightly longer debounce
   const handleBodyChange = useCallback((body: EditorJSData) => {
     setFormData((prev) => ({ ...prev, body }));
     // Trigger auto-save for existing items
     if (contentItemId) {
-      setSaveStatus("saving");
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-      saveTimeoutRef.current = setTimeout(() => {
-        handleAutoSave({ ...formData, body });
-      }, 1500); // Slightly longer debounce for editor content
+      scheduleAutoSave({ body });
     }
-  }, [contentItemId, formData]);
-
-  // Auto-save for existing items
-  const handleAutoSave = useCallback(async (data: ContentItemInput) => {
-    if (!contentItemId) return;
-
-    const result = await updateContentItem(contentItemId, data);
-    if (result.success) {
-      setSaveStatus("saved");
-      setTimeout(() => setSaveStatus("idle"), 2000);
-    } else {
-      setSaveStatus("idle");
-    }
-  }, [contentItemId]);
+  }, [contentItemId, scheduleAutoSave]);
 
   // Create campaign handler
   const handleCreateCampaign = async (name: string): Promise<string | null> => {
@@ -196,39 +180,52 @@ export function ContentEditModal({
 
   // Handle save for new items
   const handleSaveNew = async () => {
-    if (!formData.title.trim()) return;
+    if (!formData.title.trim() || createContentItemMutation.isPending) return;
 
-    setIsSaving(true);
-    try {
-      const result = await createContentItem(formData);
-      if (result.success && result.id) {
-        setContentItemId(result.id);
-        // TODO: Handle pending files and links
-        onSave();
-      }
-    } finally {
-      setIsSaving(false);
+    const result = await createContentItemMutation.mutateAsync(formData);
+    if (result.success && result.id) {
+      onSave();
+      onOpenChange(false);
     }
   };
 
-  // Cleanup timeout when dialog closes or component unmounts
-  useEffect(() => {
-    if (!open && saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
+  // Handle modal close - flush pending changes and invalidate queries
+  const handleOpenChange = useCallback(async (newOpen: boolean) => {
+    if (!newOpen && contentItemId) {
+      // Flush any pending auto-save changes before closing
+      await flushAndInvalidate();
     }
-    return () => {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-    };
-  }, [open]);
+    if (!newOpen) {
+      cancelPending();
+    }
+    onOpenChange(newOpen);
+  }, [contentItemId, flushAndInvalidate, cancelPending, onOpenChange]);
 
   const isNewItem = !item;
   const isBestList = item?.content_type?.slug === "best-list" ||
     filterOptions.types.find(t => t.id === formData.content_type_id)?.slug === "best-list";
 
+  // Convert save status to display text
+  const saveStatusDisplay = useMemo(() => {
+    switch (saveStatus) {
+      case "saving":
+        return (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Saving...
+          </span>
+        );
+      case "saved":
+        return <span className="text-xs text-green-600">Saved</span>;
+      case "error":
+        return <span className="text-xs text-red-600">Save failed</span>;
+      default:
+        return null;
+    }
+  }, [saveStatus]);
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="max-w-6xl w-[95vw] h-[90vh] p-0 gap-0 flex flex-col sm:max-w-6xl"
         showCloseButton={true}
@@ -239,24 +236,16 @@ export function ContentEditModal({
             <DialogTitle className="text-lg font-semibold truncate">
               {item?.title || "New Content"}
             </DialogTitle>
-            {saveStatus === "saving" && (
-              <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                Saving...
-              </span>
-            )}
-            {saveStatus === "saved" && (
-              <span className="text-xs text-green-600">Saved</span>
-            )}
+            {saveStatusDisplay}
           </div>
           <div className="flex items-center gap-2">
             {isNewItem && (
               <Button
                 onClick={handleSaveNew}
-                disabled={isSaving || !formData.title.trim()}
+                disabled={createContentItemMutation.isPending || !formData.title.trim()}
                 size="sm"
               >
-                {isSaving ? (
+                {createContentItemMutation.isPending ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     Creating...

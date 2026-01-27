@@ -7,7 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { FileText, Lightbulb, Users } from "lucide-react";
+import { FileText, Lightbulb, Target, ScrollText } from "lucide-react";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -19,14 +19,18 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
-  // Get user role
-  const { data: userRole } = await supabase
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", user.id)
-    .single();
+  // Fetch counts in parallel
+  const [contentResult, briefsResult, pitchesResult, campaignsResult] = await Promise.all([
+    supabase.from("cp_content_items").select("id", { count: "exact", head: true }),
+    supabase.from("cp_content_briefs").select("id", { count: "exact", head: true }),
+    supabase.from("cp_content_ideas").select("id", { count: "exact", head: true }).not("status", "in", '("converted","rejected")'),
+    supabase.from("cp_campaigns").select("id", { count: "exact", head: true }),
+  ]);
 
-  const role = userRole?.role || "author";
+  const contentCount = contentResult.count ?? 0;
+  const briefsCount = briefsResult.count ?? 0;
+  const pitchesCount = pitchesResult.count ?? 0;
+  const campaignsCount = campaignsResult.count ?? 0;
 
   return (
     <div className="space-y-6">
@@ -35,41 +39,49 @@ export default async function DashboardPage() {
         <p className="text-muted-foreground">Welcome back, {user.email}</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Content</CardTitle>
+            <CardTitle className="text-sm font-medium">Content</CardTitle>
             <FileText className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0</div>
+            <div className="text-2xl font-bold">{contentCount}</div>
             <p className="text-xs text-muted-foreground">
-              Content items in progress
+              Total content items
             </p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Strategies</CardTitle>
+            <CardTitle className="text-sm font-medium">Briefs</CardTitle>
+            <ScrollText className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{briefsCount}</div>
+            <p className="text-xs text-muted-foreground">Content briefs</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Pitches</CardTitle>
             <Lightbulb className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0</div>
-            <p className="text-xs text-muted-foreground">Active strategies</p>
+            <div className="text-2xl font-bold">{pitchesCount}</div>
+            <p className="text-xs text-muted-foreground">Active pitches</p>
           </CardContent>
         </Card>
-        {role === "admin" && (
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Team Members</CardTitle>
-              <Users className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">1</div>
-              <p className="text-xs text-muted-foreground">Active users</p>
-            </CardContent>
-          </Card>
-        )}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Campaigns</CardTitle>
+            <Target className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{campaignsCount}</div>
+            <p className="text-xs text-muted-foreground">Active campaigns</p>
+          </CardContent>
+        </Card>
       </div>
 
       <Card>

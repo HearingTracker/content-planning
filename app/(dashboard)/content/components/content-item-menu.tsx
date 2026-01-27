@@ -17,7 +17,7 @@ export interface ContentItemMenuActions {
   onEditDates?: () => void;
   onViewAttachments?: () => void;
   onViewComments?: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
 }
 
 interface ContentItemMenuProps {
@@ -82,14 +82,18 @@ export function ContentItemMenu({
             View Comments
           </DropdownMenuItem>
         )}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          variant="destructive"
-          onClick={actions.onDelete}
-        >
-          <Trash2 className="mr-2 h-4 w-4" />
-          Delete
-        </DropdownMenuItem>
+        {actions.onDelete && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={actions.onDelete}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -108,7 +112,7 @@ export function createMenuActions(
     onEditDates?: (item: ContentItem) => void;
     onViewAttachments?: (item: ContentItem) => void;
     onViewComments?: (item: ContentItem) => void;
-    onDelete: (item: ContentItem) => void;
+    onDelete?: (item: ContentItem) => void;
   }
 ): ContentItemMenuActions {
   return {
@@ -126,6 +130,8 @@ export function createMenuActions(
     onViewComments: callbacks.onViewComments
       ? () => callbacks.onViewComments!(item)
       : undefined,
-    onDelete: () => callbacks.onDelete(item),
+    onDelete: callbacks.onDelete
+      ? () => callbacks.onDelete!(item)
+      : undefined,
   };
 }

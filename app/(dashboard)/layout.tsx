@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/page-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { getUnreadCount } from "@/lib/notifications/actions";
 import { getNotificationPreferences } from "@/app/(dashboard)/settings/notifications/actions";
+import { QueryProvider } from "./providers";
 
 export default async function DashboardLayout({
   children,
@@ -38,16 +39,18 @@ export default async function DashboardLayout({
   const defaultOpen = cookieStore.get("sidebar_state")?.value !== "false";
 
   return (
-    <SidebarProvider defaultOpen={defaultOpen}>
-      <AppSidebar
-        user={user}
-        role={userRole?.role || "author"}
-        profile={profile || undefined}
-      />
-      <SidebarInset>
-        <PageHeader userId={user.id} initialUnreadCount={unreadCount} initialIsMuted={isMuted} />
-        <main className="flex-1 min-w-0 overflow-auto bg-muted/30 p-6">{children}</main>
-      </SidebarInset>
-    </SidebarProvider>
+    <QueryProvider>
+      <SidebarProvider defaultOpen={defaultOpen}>
+        <AppSidebar
+          user={user}
+          role={userRole?.role || "author"}
+          profile={profile || undefined}
+        />
+        <SidebarInset>
+          <PageHeader userId={user.id} initialUnreadCount={unreadCount} initialIsMuted={isMuted} />
+          <main className="flex-1 min-w-0 overflow-auto bg-muted/30 p-6">{children}</main>
+        </SidebarInset>
+      </SidebarProvider>
+    </QueryProvider>
   );
 }

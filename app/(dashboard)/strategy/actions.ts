@@ -459,6 +459,60 @@ export async function getBriefs(): Promise<ContentBrief[]> {
   })) as ContentBrief[];
 }
 
+export async function getBrief(id: number): Promise<ContentBrief | null> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("cp_content_briefs")
+    .select(`
+      id,
+      title,
+      slug,
+      summary,
+      target_audience,
+      content_goals,
+      tone_and_style,
+      primary_keyword,
+      secondary_keywords,
+      search_intent,
+      target_word_count,
+      outline,
+      required_sections,
+      internal_links,
+      external_references,
+      status,
+      competitor_examples,
+      notes,
+      created_at,
+      updated_at,
+      content_type:cp_content_types(id, slug, name, icon),
+      campaign:cp_campaigns(id, name, color),
+      idea:cp_content_ideas(id, title)
+    `)
+    .eq("id", id)
+    .single();
+
+  if (error || !data) {
+    console.error("Error fetching brief:", error);
+    return null;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const brief = data as any;
+  return {
+    ...brief,
+    secondary_keywords: brief.secondary_keywords || [],
+    outline: brief.outline || [],
+    required_sections: brief.required_sections || [],
+    internal_links: brief.internal_links || [],
+    external_references: brief.external_references || [],
+    competitor_examples: brief.competitor_examples || [],
+    content_type: brief.content_type || null,
+    campaign: brief.campaign || null,
+    idea: brief.idea || null,
+  } as ContentBrief;
+}
+
 export async function createBrief(
   input: ContentBriefInput
 ): Promise<{ success: boolean; error?: string; id?: number }> {

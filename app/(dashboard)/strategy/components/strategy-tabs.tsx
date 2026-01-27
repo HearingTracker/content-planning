@@ -30,7 +30,7 @@ export function StrategyTabs({ activeTab, onTabChange, counts }: StrategyTabsPro
         </TabsTrigger>
         <TabsTrigger value="ideas" className="gap-2">
           <Lightbulb className="h-4 w-4" />
-          Ideas
+          Pitches
           {counts.ideas > 0 && (
             <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-xs">
               {counts.ideas}

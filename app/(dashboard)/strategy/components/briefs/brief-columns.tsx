@@ -1,7 +1,7 @@
 "use client";
 
 import { ColumnDef } from "@tanstack/react-table";
-import { MoreHorizontal, Pencil, Trash2, Eye, FileText } from "lucide-react";
+import { MoreHorizontal, Pencil, Trash2, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -15,9 +15,9 @@ import type { ContentBrief } from "../types";
 
 interface ColumnActions {
   onEdit: (brief: ContentBrief) => void;
-  onDelete: (brief: ContentBrief) => void;
+  onDelete?: (brief: ContentBrief) => void;
   onView: (brief: ContentBrief) => void;
-  onCreateContent: (brief: ContentBrief) => void;
+  onCreateContent?: (brief: ContentBrief) => void;
 }
 
 export function createBriefColumns(
@@ -85,7 +85,7 @@ export function createBriefColumns(
     },
     {
       accessorKey: "idea",
-      header: "Source Idea",
+      header: "Source Pitch",
       cell: ({ row }) => {
         const idea = row.original.idea;
         if (!idea) return <span className="text-muted-foreground">-</span>;
@@ -100,7 +100,7 @@ export function createBriefColumns(
       id: "actions",
       cell: ({ row }) => {
         const brief = row.original;
-        const canCreateContent = brief.status === "ready" || brief.status === "assigned";
+        const canCreateContent = !!actions.onCreateContent;
 
         return (
           <DropdownMenu>
@@ -111,28 +111,28 @@ export function createBriefColumns(
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => actions.onView(brief)}>
-                <Eye className="mr-2 h-4 w-4" />
-                View details
-              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => actions.onEdit(brief)}>
                 <Pencil className="mr-2 h-4 w-4" />
                 Edit
               </DropdownMenuItem>
               {canCreateContent && (
-                <DropdownMenuItem onClick={() => actions.onCreateContent(brief)}>
+                <DropdownMenuItem onClick={() => actions.onCreateContent!(brief)}>
                   <FileText className="mr-2 h-4 w-4" />
                   Create Content
                 </DropdownMenuItem>
               )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onClick={() => actions.onDelete(brief)}
-                className="text-destructive"
-              >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Delete
-              </DropdownMenuItem>
+              {actions.onDelete && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => actions.onDelete!(brief)}
+                    variant="destructive"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         );

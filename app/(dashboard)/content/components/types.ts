@@ -141,6 +141,7 @@ export interface ContentItem {
   notes: string | null;
   storyblok_url: string | null;
   body: EditorJSData | null;
+  display_order: number;
   tags: Tag[];
   attachments: ContentAttachment[];
   links: ContentLink[];

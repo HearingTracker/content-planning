@@ -123,11 +123,11 @@ export function IdeaFormDialog({
       <DialogContent className="max-w-lg">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>{idea ? "Edit Idea" : "Submit Idea"}</DialogTitle>
+            <DialogTitle>{idea ? "Edit Pitch" : "Submit Pitch"}</DialogTitle>
             <DialogDescription>
               {idea
-                ? "Update the content idea."
-                : "Submit a new content idea for review."}
+                ? "Update the content pitch."
+                : "Submit a new content pitch for review."}
             </DialogDescription>
           </DialogHeader>
 
@@ -159,7 +159,7 @@ export function IdeaFormDialog({
                     description: e.target.value || null,
                   })
                 }
-                placeholder="Brief description of the content idea..."
+                placeholder="Brief description of the content pitch..."
                 rows={3}
               />
             </div>

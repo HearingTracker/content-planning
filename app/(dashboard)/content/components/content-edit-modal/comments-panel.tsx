@@ -5,7 +5,7 @@ import { Search, MessageSquare } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Comment, User } from "../types";
-import { getComments } from "../../actions";
+import { useComments, useAddComment, useDeleteComment, useUpdateComment } from "@/hooks/queries";
 import { CommentMessage } from "../comment-message";
 import { CommentInput } from "../comment-input";
 
@@ -24,20 +24,14 @@ export function CommentsPanel({
   className,
   highlightCommentId,
 }: CommentsPanelProps) {
-  const [comments, setComments] = useState<Comment[]>([]);
-  const [search, setSearch] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const [highlightedId, setHighlightedId] = useState<number | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
-  // Load comments when content item changes
-  useEffect(() => {
-    if (contentItemId) {
-      loadComments();
-    } else {
-      setComments([]);
-    }
-  }, [contentItemId]);
+  // React Query hooks
+  const { data: comments = [], isLoading, search, setSearch } = useComments(contentItemId);
+  const addCommentMutation = useAddComment();
+  const deleteCommentMutation = useDeleteComment();
+  const updateCommentMutation = useUpdateComment();
 
   // Scroll to and highlight comment when highlightCommentId changes
   useEffect(() => {
@@ -56,32 +50,8 @@ export function CommentsPanel({
     }
   }, [highlightCommentId, comments.length]);
 
-  // Search with debounce
-  useEffect(() => {
-    if (!contentItemId) return;
-
-    const timer = setTimeout(() => {
-      loadComments(search);
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [search, contentItemId]);
-
-  const loadComments = useCallback(
-    async (searchQuery?: string) => {
-      if (!contentItemId) return;
-
-      setIsLoading(true);
-      const data = await getComments(contentItemId, searchQuery);
-      setComments(data);
-      setIsLoading(false);
-    },
-    [contentItemId]
-  );
-
   const handleCommentAdded = useCallback((comment: Comment) => {
-    setComments((prev) => [...prev, comment]);
-    // Scroll to bottom
+    // Scroll to bottom when a new comment is added
     setTimeout(() => {
       const scrollArea = scrollAreaRef.current?.querySelector(
         "[data-radix-scroll-area-viewport]"
@@ -92,17 +62,13 @@ export function CommentsPanel({
     }, 100);
   }, []);
 
-  const handleCommentDeleted = useCallback((commentId: number) => {
-    setComments((prev) => prev.filter((c) => c.id !== commentId));
-  }, []);
+  const handleCommentDeleted = useCallback(async (commentId: number) => {
+    await deleteCommentMutation.mutateAsync(commentId);
+  }, [deleteCommentMutation]);
 
-  const handleCommentUpdated = useCallback((commentId: number, body: string) => {
-    setComments((prev) =>
-      prev.map((c) =>
-        c.id === commentId ? { ...c, body, updated_at: new Date().toISOString() } : c
-      )
-    );
-  }, []);
+  const handleCommentUpdated = useCallback(async (commentId: number, body: string) => {
+    await updateCommentMutation.mutateAsync({ commentId, body });
+  }, [updateCommentMutation]);
 
   if (!contentItemId) {
     return (

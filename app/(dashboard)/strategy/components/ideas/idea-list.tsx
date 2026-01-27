@@ -8,8 +8,8 @@ interface IdeaListProps {
   ideas: ContentIdea[];
   userId: string | null;
   onEdit: (idea: ContentIdea) => void;
-  onDelete: (idea: ContentIdea) => void;
-  onConvertToBrief: (idea: ContentIdea) => void;
+  onDelete?: (idea: ContentIdea) => void;
+  onConvertToBrief?: (idea: ContentIdea) => void;
   onVote: (ideaId: number, vote: 1 | -1) => void;
   onCreateNew: () => void;
 }
@@ -27,10 +27,10 @@ export function IdeaList({
     return (
       <EmptyState
         icon="idea"
-        title="No ideas yet"
-        description="Start by submitting your first content idea."
+        title="No pitches yet"
+        description="Start by submitting your first content pitch."
         action={{
-          label: "Submit idea",
+          label: "Submit pitch",
           onClick: onCreateNew,
         }}
       />
@@ -45,8 +45,8 @@ export function IdeaList({
           idea={idea}
           userId={userId}
           onEdit={() => onEdit(idea)}
-          onDelete={() => onDelete(idea)}
-          onConvertToBrief={() => onConvertToBrief(idea)}
+          onDelete={onDelete ? () => onDelete(idea) : undefined}
+          onConvertToBrief={onConvertToBrief ? () => onConvertToBrief(idea) : undefined}
           onVote={(vote) => onVote(idea.id, vote)}
         />
       ))}

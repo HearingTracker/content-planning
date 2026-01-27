@@ -76,11 +76,6 @@ export function KanbanColumn({
             )}
           </div>
         </div>
-        {status.description && (
-          <p className="text-xs text-muted-foreground mt-1">
-            {status.description}
-          </p>
-        )}
       </div>
 
       {/* Column Content */}

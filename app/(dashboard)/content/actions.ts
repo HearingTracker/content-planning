@@ -36,6 +36,7 @@ export async function getContentItems(): Promise<ContentItem[]> {
       notes,
       storyblok_url,
       body,
+      display_order,
       created_at,
       updated_at,
       content_type:cp_content_types(id, slug, name, description, icon, is_active),
@@ -117,6 +118,7 @@ export async function getContentItems(): Promise<ContentItem[]> {
     notes: item.notes,
     storyblok_url: item.storyblok_url,
     body: item.body || null,
+    display_order: item.display_order ?? 0,
     tags: (item.tags || []).map((t: { tag: unknown }) => t.tag).filter(Boolean),
     attachments: item.attachments || [],
     links: (item.links || []).sort((a: { display_order: number }, b: { display_order: number }) => a.display_order - b.display_order),
@@ -372,6 +374,68 @@ export async function changeWorkflowStatus(
       to_status_id: newStatusId,
       transitioned_by: user?.id,
     });
+  }
+
+  revalidatePath("/content");
+  return { success: true };
+}
+
+export async function reorderContentItems(
+  updates: { id: number; display_order: number; workflow_status_id?: number }[]
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // Update each item's display_order (and optionally status)
+  for (const update of updates) {
+    const updateData: { display_order: number; workflow_status_id?: number } = {
+      display_order: update.display_order,
+    };
+
+    // If status is changing, get current status for transition logging
+    if (update.workflow_status_id !== undefined) {
+      const { data: currentItem } = await supabase
+        .from("cp_content_items")
+        .select("workflow_status_id")
+        .eq("id", update.id)
+        .single();
+
+      const fromStatusId = currentItem?.workflow_status_id;
+
+      updateData.workflow_status_id = update.workflow_status_id;
+
+      const { error } = await supabase
+        .from("cp_content_items")
+        .update(updateData)
+        .eq("id", update.id);
+
+      if (error) {
+        console.error("Error reordering content item:", error);
+        return { success: false, error: error.message };
+      }
+
+      // Log transition if status changed
+      if (fromStatusId && fromStatusId !== update.workflow_status_id) {
+        await supabase.from("cp_workflow_transitions").insert({
+          content_item_id: update.id,
+          from_status_id: fromStatusId,
+          to_status_id: update.workflow_status_id,
+          transitioned_by: user?.id,
+        });
+      }
+    } else {
+      const { error } = await supabase
+        .from("cp_content_items")
+        .update(updateData)
+        .eq("id", update.id);
+
+      if (error) {
+        console.error("Error reordering content item:", error);
+        return { success: false, error: error.message };
+      }
+    }
   }
 
   revalidatePath("/content");

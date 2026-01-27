@@ -20,9 +20,9 @@ import type { ContentBrief } from "../types";
 interface BriefTableProps {
   data: ContentBrief[];
   onEdit: (brief: ContentBrief) => void;
-  onDelete: (brief: ContentBrief) => void;
+  onDelete?: (brief: ContentBrief) => void;
   onView: (brief: ContentBrief) => void;
-  onCreateContent: (brief: ContentBrief) => void;
+  onCreateContent?: (brief: ContentBrief) => void;
   onCreateNew: () => void;
 }
 
