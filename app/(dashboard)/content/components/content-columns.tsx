@@ -18,6 +18,7 @@ interface ColumnActions {
   onEditDates?: (item: ContentItem) => void;
   onViewAttachments?: (item: ContentItem) => void;
   onViewComments?: (item: ContentItem) => void;
+  onCopyLink?: (item: ContentItem) => void;
 }
 
 export function createColumns(actions: ColumnActions): ColumnDef<ContentItem>[] {
@@ -132,6 +133,7 @@ export function createColumns(actions: ColumnActions): ColumnDef<ContentItem>[] 
               onEditDates: actions.onEditDates,
               onViewAttachments: actions.onViewAttachments,
               onViewComments: actions.onViewComments,
+              onCopyLink: actions.onCopyLink,
               onDelete: actions.onDelete,
             })}
           >

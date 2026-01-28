@@ -114,14 +114,23 @@ export function NotificationBell({
   };
 
   const getNotificationLink = (notification: Notification) => {
-    if (notification.entity_type === "content_item" && notification.entity_id) {
-      let url = `/content?item=${notification.entity_id}`;
-      if (notification.comment_id) {
-        url += `&comment=${notification.comment_id}`;
+    if (!notification.entity_id) return null;
+
+    switch (notification.entity_type) {
+      case "content_item": {
+        let url = `/content?item=${notification.entity_id}`;
+        if (notification.comment_id) {
+          url += `&comment=${notification.comment_id}`;
+        }
+        return url;
       }
-      return url;
+      case "content_brief":
+        return `/strategy?tab=briefs&brief=${notification.entity_id}`;
+      case "content_idea":
+        return `/strategy?tab=ideas&idea=${notification.entity_id}`;
+      default:
+        return null;
     }
-    return null;
   };
 
   return (

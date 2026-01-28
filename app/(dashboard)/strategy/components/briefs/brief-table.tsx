@@ -23,6 +23,7 @@ interface BriefTableProps {
   onDelete?: (brief: ContentBrief) => void;
   onView: (brief: ContentBrief) => void;
   onCreateContent?: (brief: ContentBrief) => void;
+  onCopyLink?: (brief: ContentBrief) => void;
   onCreateNew: () => void;
 }
 
@@ -32,9 +33,10 @@ export function BriefTable({
   onDelete,
   onView,
   onCreateContent,
+  onCopyLink,
   onCreateNew,
 }: BriefTableProps) {
-  const columns = createBriefColumns({ onEdit, onDelete, onView, onCreateContent });
+  const columns = createBriefColumns({ onEdit, onDelete, onView, onCreateContent, onCopyLink });
 
   const table = useReactTable({
     data,

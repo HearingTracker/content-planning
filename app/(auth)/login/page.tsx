@@ -3,9 +3,9 @@ import { LoginForm } from "./login-form";
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ message?: string }>;
+  searchParams: Promise<{ message?: string; next?: string }>;
 }) {
-  const { message } = await searchParams;
+  const { message, next } = await searchParams;
 
   return (
     <div className="flex min-h-screen items-center justify-center">
@@ -21,7 +21,7 @@ export default async function LoginPage({
             {message}
           </div>
         )}
-        <LoginForm />
+        <LoginForm redirectTo={next} />
       </div>
     </div>
   );

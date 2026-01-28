@@ -1,7 +1,7 @@
 "use client";
 
 import { format } from "date-fns";
-import { Calendar, ClipboardList, FileText, Lightbulb, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { Calendar, ClipboardList, FileText, Lightbulb, Link2, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -19,9 +19,10 @@ interface CampaignCardProps {
   campaign: CampaignSummary;
   onEdit: () => void;
   onDelete: () => void;
+  onCopyLink?: () => void;
 }
 
-export function CampaignCard({ campaign, onEdit, onDelete }: CampaignCardProps) {
+export function CampaignCard({ campaign, onEdit, onDelete, onCopyLink }: CampaignCardProps) {
   const dateRange =
     campaign.start_date || campaign.end_date
       ? [
@@ -58,6 +59,12 @@ export function CampaignCard({ campaign, onEdit, onDelete }: CampaignCardProps) 
                 <Pencil className="mr-2 h-4 w-4" />
                 Edit
               </DropdownMenuItem>
+              {onCopyLink && (
+                <DropdownMenuItem onClick={onCopyLink}>
+                  <Link2 className="mr-2 h-4 w-4" />
+                  Copy Link
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={onDelete} className="text-destructive">
                 <Trash2 className="mr-2 h-4 w-4" />

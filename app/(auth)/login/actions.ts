@@ -18,8 +18,9 @@ export async function login(formData: FormData) {
     return { error: error.message || "Invalid email or password" };
   }
 
+  const next = formData.get("next") as string | null;
   revalidatePath("/", "layout");
-  redirect("/");
+  redirect(next || "/");
 }
 
 export async function logout() {

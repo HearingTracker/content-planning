@@ -19,6 +19,7 @@ interface KanbanColumnProps {
   onEditDates?: (item: ContentItem) => void;
   onViewAttachments?: (item: ContentItem) => void;
   onViewComments?: (item: ContentItem) => void;
+  onCopyLink?: (item: ContentItem) => void;
   onDelete?: (item: ContentItem) => void;
 }
 
@@ -30,6 +31,7 @@ export function KanbanColumn({
   onEditDates,
   onViewAttachments,
   onViewComments,
+  onCopyLink,
   onDelete,
 }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({
@@ -100,6 +102,7 @@ export function KanbanColumn({
                 onEditDates={onEditDates ? () => onEditDates(item) : undefined}
                 onViewAttachments={onViewAttachments ? () => onViewAttachments(item) : undefined}
                 onViewComments={onViewComments ? () => onViewComments(item) : undefined}
+                onCopyLink={onCopyLink ? () => onCopyLink(item) : undefined}
                 onDelete={onDelete ? () => onDelete(item) : undefined}
               />
             ))}

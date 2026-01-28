@@ -27,6 +27,7 @@ interface ContentKanbanProps {
   onEditDates?: (item: ContentItem) => void;
   onViewAttachments?: (item: ContentItem) => void;
   onViewComments?: (item: ContentItem) => void;
+  onCopyLink?: (item: ContentItem) => void;
   onDelete?: (item: ContentItem) => void;
 }
 
@@ -39,6 +40,7 @@ export function ContentKanban({
   onEditDates,
   onViewAttachments,
   onViewComments,
+  onCopyLink,
   onDelete,
 }: ContentKanbanProps) {
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -431,6 +433,7 @@ export function ContentKanban({
               onEditDates={onEditDates}
               onViewAttachments={onViewAttachments}
               onViewComments={onViewComments}
+              onCopyLink={onCopyLink}
               onDelete={onDelete}
             />
           ))}

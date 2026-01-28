@@ -19,11 +19,11 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
-  // Fetch counts in parallel
+  // Fetch counts in parallel from unified cp_content table
   const [contentResult, briefsResult, pitchesResult, campaignsResult] = await Promise.all([
-    supabase.from("cp_content_items").select("id", { count: "exact", head: true }),
-    supabase.from("cp_content_briefs").select("id", { count: "exact", head: true }),
-    supabase.from("cp_content_ideas").select("id", { count: "exact", head: true }).not("status", "in", '("converted","rejected")'),
+    supabase.from("cp_content").select("id", { count: "exact", head: true }).eq("stage", "content"),
+    supabase.from("cp_content").select("id", { count: "exact", head: true }).eq("stage", "brief"),
+    supabase.from("cp_content").select("id", { count: "exact", head: true }).eq("stage", "idea").not("idea_status", "in", '("converted","rejected")'),
     supabase.from("cp_campaigns").select("id", { count: "exact", head: true }),
   ]);
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { ColumnDef } from "@tanstack/react-table";
-import { MoreHorizontal, Pencil, Trash2, FileText } from "lucide-react";
+import { MoreHorizontal, Pencil, Trash2, FileText, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -18,6 +18,7 @@ interface ColumnActions {
   onDelete?: (brief: ContentBrief) => void;
   onView: (brief: ContentBrief) => void;
   onCreateContent?: (brief: ContentBrief) => void;
+  onCopyLink?: (brief: ContentBrief) => void;
 }
 
 export function createBriefColumns(
@@ -119,6 +120,12 @@ export function createBriefColumns(
                 <DropdownMenuItem onClick={() => actions.onCreateContent!(brief)}>
                   <FileText className="mr-2 h-4 w-4" />
                   Create Content
+                </DropdownMenuItem>
+              )}
+              {actions.onCopyLink && (
+                <DropdownMenuItem onClick={() => actions.onCopyLink!(brief)}>
+                  <Link2 className="mr-2 h-4 w-4" />
+                  Copy Link
                 </DropdownMenuItem>
               )}
               {actions.onDelete && (

@@ -10,6 +10,7 @@ interface IdeaListProps {
   onEdit: (idea: ContentIdea) => void;
   onDelete?: (idea: ContentIdea) => void;
   onConvertToBrief?: (idea: ContentIdea) => void;
+  onCopyLink?: (idea: ContentIdea) => void;
   onVote: (ideaId: number, vote: 1 | -1) => void;
   onCreateNew: () => void;
 }
@@ -20,6 +21,7 @@ export function IdeaList({
   onEdit,
   onDelete,
   onConvertToBrief,
+  onCopyLink,
   onVote,
   onCreateNew,
 }: IdeaListProps) {
@@ -47,6 +49,7 @@ export function IdeaList({
           onEdit={() => onEdit(idea)}
           onDelete={onDelete ? () => onDelete(idea) : undefined}
           onConvertToBrief={onConvertToBrief ? () => onConvertToBrief(idea) : undefined}
+          onCopyLink={onCopyLink ? () => onCopyLink(idea) : undefined}
           onVote={(vote) => onVote(idea.id, vote)}
         />
       ))}

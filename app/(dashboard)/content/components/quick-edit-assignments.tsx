@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { X, Plus } from "lucide-react";
 import {
   Dialog,
@@ -46,11 +46,20 @@ export function QuickEditAssignments({
   onSuccess,
 }: QuickEditAssignmentsProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [assignments, setAssignments] = useState<AssignmentInput[]>(
-    item.assignments.map((a) => ({ user_id: a.user_id, role: a.role }))
-  );
+  const [assignments, setAssignments] = useState<AssignmentInput[]>([]);
   const [newUserId, setNewUserId] = useState<string>("");
   const [newRole, setNewRole] = useState<AssignmentRole>("author");
+
+  // Reset assignments when item changes or dialog opens
+  useEffect(() => {
+    if (open) {
+      setAssignments(
+        item.assignments.map((a) => ({ user_id: a.user_id, role: a.role }))
+      );
+      setNewUserId("");
+      setNewRole("author");
+    }
+  }, [item.id, open]);
 
   const handleAddAssignment = () => {
     if (!newUserId) return;

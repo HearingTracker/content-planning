@@ -29,6 +29,7 @@ interface ContentDataTableProps {
   onEditDates?: (item: ContentItem) => void;
   onViewAttachments?: (item: ContentItem) => void;
   onViewComments?: (item: ContentItem) => void;
+  onCopyLink?: (item: ContentItem) => void;
 }
 
 export function ContentDataTable({
@@ -41,8 +42,9 @@ export function ContentDataTable({
   onEditDates,
   onViewAttachments,
   onViewComments,
+  onCopyLink,
 }: ContentDataTableProps) {
-  const columns = createColumns({ onEdit, onDelete, onView, onEditAssignments, onEditDates, onViewAttachments, onViewComments });
+  const columns = createColumns({ onEdit, onDelete, onView, onEditAssignments, onEditDates, onViewAttachments, onViewComments, onCopyLink });
 
   // Context menu state
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
@@ -142,6 +144,7 @@ export function ContentDataTable({
             onEditDates,
             onViewAttachments,
             onViewComments,
+            onCopyLink,
             onDelete,
           })}
           open={contextMenuOpen}

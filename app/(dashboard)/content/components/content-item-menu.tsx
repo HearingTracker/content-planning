@@ -1,6 +1,6 @@
 "use client";
 
-import { Edit, Users, Calendar, MessageSquare, Trash2, Eye, Paperclip } from "lucide-react";
+import { Edit, Users, Calendar, MessageSquare, Trash2, Eye, Paperclip, Link2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,6 +17,7 @@ export interface ContentItemMenuActions {
   onEditDates?: () => void;
   onViewAttachments?: () => void;
   onViewComments?: () => void;
+  onCopyLink?: () => void;
   onDelete?: () => void;
 }
 
@@ -82,6 +83,15 @@ export function ContentItemMenu({
             View Comments
           </DropdownMenuItem>
         )}
+        {actions.onCopyLink && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={actions.onCopyLink}>
+              <Link2 className="mr-2 h-4 w-4" />
+              Copy Link
+            </DropdownMenuItem>
+          </>
+        )}
         {actions.onDelete && (
           <>
             <DropdownMenuSeparator />
@@ -112,6 +122,7 @@ export function createMenuActions(
     onEditDates?: (item: ContentItem) => void;
     onViewAttachments?: (item: ContentItem) => void;
     onViewComments?: (item: ContentItem) => void;
+    onCopyLink?: (item: ContentItem) => void;
     onDelete?: (item: ContentItem) => void;
   }
 ): ContentItemMenuActions {
@@ -129,6 +140,9 @@ export function createMenuActions(
       : undefined,
     onViewComments: callbacks.onViewComments
       ? () => callbacks.onViewComments!(item)
+      : undefined,
+    onCopyLink: callbacks.onCopyLink
+      ? () => callbacks.onCopyLink!(item)
       : undefined,
     onDelete: callbacks.onDelete
       ? () => callbacks.onDelete!(item)

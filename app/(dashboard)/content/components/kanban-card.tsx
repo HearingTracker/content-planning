@@ -21,6 +21,7 @@ interface KanbanCardProps {
   onEditDates?: () => void;
   onViewAttachments?: () => void;
   onViewComments?: () => void;
+  onCopyLink?: () => void;
   onDelete?: () => void;
 }
 
@@ -31,6 +32,7 @@ export function KanbanCard({
   onEditDates,
   onViewAttachments,
   onViewComments,
+  onCopyLink,
   onDelete,
 }: KanbanCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -86,6 +88,7 @@ export function KanbanCard({
     onEditDates: onEditDates,
     onViewAttachments: onViewAttachments,
     onViewComments: onViewComments,
+    onCopyLink: onCopyLink,
     onDelete: onDelete || (() => {}),
   };
 

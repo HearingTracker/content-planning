@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/page-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { getUnreadCount } from "@/lib/notifications/actions";
 import { getNotificationPreferences } from "@/app/(dashboard)/settings/notifications/actions";
+import { Toaster } from "sonner";
 import { QueryProvider } from "./providers";
 
 export default async function DashboardLayout({
@@ -50,6 +51,7 @@ export default async function DashboardLayout({
           <PageHeader userId={user.id} initialUnreadCount={unreadCount} initialIsMuted={isMuted} />
           <main className="flex-1 min-w-0 overflow-auto bg-muted/30 p-6">{children}</main>
         </SidebarInset>
+        <Toaster />
       </SidebarProvider>
     </QueryProvider>
   );

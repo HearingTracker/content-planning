@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
-import { useQueryStates, parseAsString } from "nuqs";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { useQueryStates, parseAsString, parseAsInteger } from "nuqs";
 import { Plus } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -46,6 +47,9 @@ import type {
 
 const tabParsers = {
   tab: parseAsString.withDefault("campaigns"),
+  brief: parseAsInteger,
+  idea: parseAsInteger,
+  campaign: parseAsInteger,
 };
 
 export default function StrategyPage() {
@@ -114,6 +118,48 @@ export default function StrategyPage() {
 
   const activeTab = urlState.tab as StrategyTab;
 
+  // Deep link: auto-open brief from URL
+  useEffect(() => {
+    if (urlState.brief && briefs.length > 0 && !isBriefsLoading) {
+      const briefToOpen = briefs.find((b) => b.id === urlState.brief);
+      if (briefToOpen) {
+        if (activeTab !== "briefs") {
+          setUrlState({ tab: "briefs" });
+        }
+        setEditingBrief(briefToOpen);
+        setBriefDialogOpen(true);
+      }
+    }
+  }, [urlState.brief, briefs, isBriefsLoading]);
+
+  // Deep link: auto-open idea from URL
+  useEffect(() => {
+    if (urlState.idea && ideas.length > 0 && !isIdeasLoading) {
+      const ideaToOpen = ideas.find((i) => i.id === urlState.idea);
+      if (ideaToOpen) {
+        if (activeTab !== "ideas") {
+          setUrlState({ tab: "ideas" });
+        }
+        setEditingIdea(ideaToOpen);
+        setIdeaDialogOpen(true);
+      }
+    }
+  }, [urlState.idea, ideas, isIdeasLoading]);
+
+  // Deep link: auto-open campaign from URL
+  useEffect(() => {
+    if (urlState.campaign && campaigns.length > 0 && !isCampaignsLoading) {
+      const campaignToOpen = campaigns.find((c) => c.campaign_id === urlState.campaign);
+      if (campaignToOpen) {
+        if (activeTab !== "campaigns") {
+          setUrlState({ tab: "campaigns" });
+        }
+        setEditingCampaign(campaignToOpen);
+        setCampaignDialogOpen(true);
+      }
+    }
+  }, [urlState.campaign, campaigns, isCampaignsLoading]);
+
   // Tab counts
   const counts = useMemo(
     () => ({
@@ -125,6 +171,14 @@ export default function StrategyPage() {
     [campaigns, ideas, briefs]
   );
 
+  // Copy link helper
+  const copyItemLink = useCallback((path: string) => {
+    const url = `${window.location.origin}${path}`;
+    navigator.clipboard.writeText(url).then(() => {
+      toast("Link copied");
+    });
+  }, []);
+
   // Campaign handlers
   const handleCreateCampaign = () => {
     setEditingCampaign(null);
@@ -134,7 +188,18 @@ export default function StrategyPage() {
   const handleEditCampaign = (campaign: CampaignSummary) => {
     setEditingCampaign(campaign);
     setCampaignDialogOpen(true);
+    setUrlState({ campaign: campaign.campaign_id });
   };
+
+  const handleCampaignDialogOpenChange = useCallback(
+    (open: boolean) => {
+      setCampaignDialogOpen(open);
+      if (!open && urlState.campaign) {
+        setUrlState({ campaign: null });
+      }
+    },
+    [urlState.campaign, setUrlState]
+  );
 
   const handleDeleteCampaignClick = (campaign: CampaignSummary) => {
     setDeletingCampaign(campaign);
@@ -157,6 +222,13 @@ export default function StrategyPage() {
     }
   };
 
+  const handleCopyCampaignLink = useCallback(
+    (campaign: CampaignSummary) => {
+      copyItemLink(`/strategy?tab=campaigns&campaign=${campaign.campaign_id}`);
+    },
+    [copyItemLink]
+  );
+
   // Idea handlers
   const handleCreateIdea = () => {
     setEditingIdea(null);
@@ -166,7 +238,18 @@ export default function StrategyPage() {
   const handleEditIdea = (idea: ContentIdea) => {
     setEditingIdea(idea);
     setIdeaDialogOpen(true);
+    setUrlState({ idea: idea.id });
   };
+
+  const handleIdeaDialogOpenChange = useCallback(
+    (open: boolean) => {
+      setIdeaDialogOpen(open);
+      if (!open && urlState.idea) {
+        setUrlState({ idea: null });
+      }
+    },
+    [urlState.idea, setUrlState]
+  );
 
   const handleDeleteIdeaClick = (idea: ContentIdea) => {
     setDeletingIdea(idea);
@@ -200,6 +283,13 @@ export default function StrategyPage() {
     }
   };
 
+  const handleCopyIdeaLink = useCallback(
+    (idea: ContentIdea) => {
+      copyItemLink(`/strategy?tab=ideas&idea=${idea.id}`);
+    },
+    [copyItemLink]
+  );
+
   // Brief handlers
   const handleCreateBrief = () => {
     setEditingBrief(null);
@@ -209,7 +299,18 @@ export default function StrategyPage() {
   const handleEditBrief = (brief: ContentBrief) => {
     setEditingBrief(brief);
     setBriefDialogOpen(true);
+    setUrlState({ brief: brief.id });
   };
+
+  const handleBriefDialogOpenChange = useCallback(
+    (open: boolean) => {
+      setBriefDialogOpen(open);
+      if (!open && urlState.brief) {
+        setUrlState({ brief: null });
+      }
+    },
+    [urlState.brief, setUrlState]
+  );
 
   const handleViewBrief = (brief: ContentBrief) => {
     handleEditBrief(brief);
@@ -240,6 +341,13 @@ export default function StrategyPage() {
     // Navigate to content page with brief pre-selected
     window.location.href = `/content?brief_id=${brief.id}`;
   };
+
+  const handleCopyBriefLink = useCallback(
+    (brief: ContentBrief) => {
+      copyItemLink(`/strategy?tab=briefs&brief=${brief.id}`);
+    },
+    [copyItemLink]
+  );
 
   // Get create button label
   const getCreateLabel = () => {
@@ -308,6 +416,7 @@ export default function StrategyPage() {
           campaigns={campaigns}
           onEdit={handleEditCampaign}
           onDelete={handleDeleteCampaignClick}
+          onCopyLink={handleCopyCampaignLink}
           onCreateNew={handleCreateCampaign}
         />
       ) : activeTab === "ideas" ? (
@@ -317,6 +426,7 @@ export default function StrategyPage() {
           onEdit={handleEditIdea}
           onDelete={canEdit ? handleDeleteIdeaClick : undefined}
           onConvertToBrief={canEdit ? handleConvertIdeaToBrief : undefined}
+          onCopyLink={handleCopyIdeaLink}
           onVote={handleVoteOnIdea}
           onCreateNew={handleCreateIdea}
         />
@@ -327,6 +437,7 @@ export default function StrategyPage() {
           onDelete={canEdit ? handleDeleteBriefClick : undefined}
           onView={handleViewBrief}
           onCreateContent={canEdit ? handleCreateContentFromBrief : undefined}
+          onCopyLink={handleCopyBriefLink}
           onCreateNew={handleCreateBrief}
         />
       )}
@@ -334,7 +445,7 @@ export default function StrategyPage() {
       {/* Campaign Dialogs */}
       <CampaignFormDialog
         open={campaignDialogOpen}
-        onOpenChange={setCampaignDialogOpen}
+        onOpenChange={handleCampaignDialogOpenChange}
         campaign={editingCampaign}
         onSubmit={handleCampaignSubmit}
       />
@@ -351,7 +462,7 @@ export default function StrategyPage() {
       {/* Idea Dialogs */}
       <IdeaFormDialog
         open={ideaDialogOpen}
-        onOpenChange={setIdeaDialogOpen}
+        onOpenChange={handleIdeaDialogOpenChange}
         idea={editingIdea}
         filterOptions={filterOptions}
         localCampaigns={localCampaigns}
@@ -371,7 +482,7 @@ export default function StrategyPage() {
       {/* Brief Dialogs */}
       <BriefFormDialog
         open={briefDialogOpen}
-        onOpenChange={setBriefDialogOpen}
+        onOpenChange={handleBriefDialogOpenChange}
         brief={editingBrief}
         filterOptions={filterOptions}
         localCampaigns={localCampaigns}

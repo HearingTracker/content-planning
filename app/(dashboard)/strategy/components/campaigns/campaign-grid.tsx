@@ -8,6 +8,7 @@ interface CampaignGridProps {
   campaigns: CampaignSummary[];
   onEdit: (campaign: CampaignSummary) => void;
   onDelete: (campaign: CampaignSummary) => void;
+  onCopyLink?: (campaign: CampaignSummary) => void;
   onCreateNew: () => void;
 }
 
@@ -15,6 +16,7 @@ export function CampaignGrid({
   campaigns,
   onEdit,
   onDelete,
+  onCopyLink,
   onCreateNew,
 }: CampaignGridProps) {
   if (campaigns.length === 0) {
@@ -39,6 +41,7 @@ export function CampaignGrid({
           campaign={campaign}
           onEdit={() => onEdit(campaign)}
           onDelete={() => onDelete(campaign)}
+          onCopyLink={onCopyLink ? () => onCopyLink(campaign) : undefined}
         />
       ))}
     </div>

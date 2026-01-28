@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useTransition } from "react";
+import { toast } from "sonner";
 import { useQueryStates, parseAsString, parseAsArrayOf, parseAsInteger } from "nuqs";
 import { format, startOfMonth, endOfMonth } from "date-fns";
 import { Plus, Filter, ChevronDown } from "lucide-react";
@@ -236,6 +237,7 @@ export default function ContentPage() {
   const handleEdit = (item: ContentItem) => {
     setEditingItem(item);
     setEditModalOpen(true);
+    setUrlState({ item: item.id });
   };
 
   const handleDelete = (item: ContentItem) => {
@@ -302,6 +304,13 @@ export default function ContentPage() {
   const handleQuickEditSuccess = () => {
     refetchItems();
   };
+
+  const handleCopyLink = useCallback((item: ContentItem) => {
+    const url = `${window.location.origin}/content?item=${item.id}`;
+    navigator.clipboard.writeText(url).then(() => {
+      toast("Link copied");
+    });
+  }, []);
 
   // Count active filters
   const activeFilterCount = useMemo(() => {
@@ -410,6 +419,7 @@ export default function ContentPage() {
           onEditDates={handleEditDates}
           onViewAttachments={handleViewAttachments}
           onViewComments={handleViewComments}
+          onCopyLink={handleCopyLink}
         />
       ) : view === "kanban" ? (
         <div className="flex-1 min-h-0 flex">
@@ -422,6 +432,7 @@ export default function ContentPage() {
             onEditDates={handleEditDates}
             onViewAttachments={handleViewAttachments}
             onViewComments={handleViewComments}
+            onCopyLink={handleCopyLink}
             onDelete={canDelete ? handleDelete : undefined}
           />
         </div>

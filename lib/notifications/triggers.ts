@@ -102,9 +102,23 @@ async function createNotifications(options: NotifyOptions): Promise<void> {
     return;
   }
 
-  const actionUrl = options.entityType === "content_item" && options.entityId
-    ? `/content?item=${options.entityId}`
-    : "/";
+  let actionUrl = "/";
+  if (options.entityId) {
+    switch (options.entityType) {
+      case "content_item":
+        actionUrl = `/content?item=${options.entityId}`;
+        if (options.commentId) {
+          actionUrl += `&comment=${options.commentId}`;
+        }
+        break;
+      case "content_brief":
+        actionUrl = `/strategy?tab=briefs&brief=${options.entityId}`;
+        break;
+      case "content_idea":
+        actionUrl = `/strategy?tab=ideas&idea=${options.entityId}`;
+        break;
+    }
+  }
 
   // Send push notifications to users who have browser notifications enabled
   if (recipientsForPush.length > 0) {
