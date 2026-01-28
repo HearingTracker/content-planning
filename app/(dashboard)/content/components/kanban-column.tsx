@@ -46,7 +46,7 @@ export function KanbanColumn({
   ).length;
 
   return (
-    <div className="flex flex-col bg-muted/50 rounded-lg min-w-[280px] w-[280px]">
+    <div className="flex flex-col bg-muted/50 rounded-lg min-w-[280px] w-[280px] h-full max-h-full">
       {/* Column Header */}
       <div className="p-3 border-b">
         <div className="flex items-center justify-between">
@@ -79,7 +79,7 @@ export function KanbanColumn({
       </div>
 
       {/* Column Content */}
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         <div
           ref={setNodeRef}
           className={cn(

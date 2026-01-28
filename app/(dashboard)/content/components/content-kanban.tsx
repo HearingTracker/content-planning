@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -14,7 +14,6 @@ import {
   DragOverEvent,
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates, arrayMove } from "@dnd-kit/sortable";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { KanbanColumn } from "./kanban-column";
 import { KanbanCard } from "./kanban-card";
 import type { ContentItem, WorkflowStatus } from "./types";
@@ -47,6 +46,54 @@ export function ContentKanban({
   const [originalStatusId, setOriginalStatusId] = useState<number | null>(null);
   // Local state for optimistic updates during/after drag
   const [localItems, setLocalItems] = useState<ContentItem[] | null>(null);
+
+  // Pan functionality
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const [startPos, setStartPos] = useState({ x: 0, y: 0 });
+  const [scrollPos, setScrollPos] = useState({ x: 0, y: 0 });
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Only pan if clicking directly on the container or the columns wrapper, not on cards
+    const target = e.target as HTMLElement;
+    const isCard = target.closest('[data-kanban-card]');
+    const isDragHandle = target.closest('[data-drag-handle]');
+
+    if (isCard || isDragHandle || activeId) return;
+
+    e.preventDefault();
+    setIsPanning(true);
+    setStartPos({ x: e.clientX, y: e.clientY });
+    if (containerRef.current) {
+      setScrollPos({
+        x: containerRef.current.scrollLeft,
+        y: containerRef.current.scrollTop,
+      });
+    }
+  }, [activeId]);
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!isPanning || !containerRef.current) return;
+
+    const dx = e.clientX - startPos.x;
+
+    containerRef.current.scrollLeft = scrollPos.x - dx;
+  }, [isPanning, startPos, scrollPos]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsPanning(false);
+  }, []);
+
+  useEffect(() => {
+    if (isPanning) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [isPanning, handleMouseMove, handleMouseUp]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -367,8 +414,13 @@ export function ContentKanban({
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
     >
-      <ScrollArea className="w-full whitespace-nowrap pb-4">
-        <div className="flex gap-4 p-1">
+      <div
+        ref={containerRef}
+        className={`flex-1 min-h-0 overflow-x-auto overflow-y-hidden ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+        onMouseDown={handleMouseDown}
+        style={{ userSelect: isPanning ? 'none' : 'auto' }}
+      >
+        <div className="flex gap-4 pt-4 px-4 h-full min-h-0">
           {allStatuses.map((status) => (
             <KanbanColumn
               key={status.id}
@@ -383,8 +435,7 @@ export function ContentKanban({
             />
           ))}
         </div>
-        <ScrollBar orientation="horizontal" />
-      </ScrollArea>
+      </div>
 
       <DragOverlay dropAnimation={null}>
         {activeItem && (

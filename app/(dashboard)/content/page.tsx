@@ -29,7 +29,7 @@ import {
   useCalendarItems,
   useCanDelete,
 } from "@/hooks/queries";
-import { getBrief } from "../strategy/actions";
+import { promoteContent } from "../strategy/actions";
 import type {
   ContentItem,
   ContentFilters,
@@ -119,26 +119,26 @@ export default function ContentPage() {
     }
   }, [urlState.item, items, isLoading]);
 
-  // Open modal to create from brief
+  // Promote brief to content stage when brief_id is in URL
   useEffect(() => {
     if (urlState.brief_id && !editModalOpen) {
-      getBrief(urlState.brief_id).then((brief) => {
-        if (brief) {
-          setInitialData({
-            title: brief.title,
-            content_type_id: brief.content_type?.id || null,
-            campaign_id: brief.campaign?.id || null,
-            notes: brief.notes,
-            brief_id: brief.id,
-          });
-          setEditingItem(null);
-          setEditModalOpen(true);
+      // In the unified model, we just promote the brief to content stage
+      promoteContent(urlState.brief_id, "content").then((result) => {
+        if (result.success) {
+          // Refetch items to show the newly promoted content
+          refetchItems();
+          // Find and open the promoted item
+          const promotedItem = items.find((i) => i.id === urlState.brief_id);
+          if (promotedItem) {
+            setEditingItem(promotedItem);
+            setEditModalOpen(true);
+          }
         }
         // Clear brief_id from URL
         setUrlState({ brief_id: null });
       });
     }
-  }, [urlState.brief_id, editModalOpen, setUrlState]);
+  }, [urlState.brief_id, editModalOpen, setUrlState, refetchItems, items]);
 
   // Clear URL params when modal closes
   const handleModalOpenChange = useCallback(
@@ -315,10 +315,13 @@ export default function ContentPage() {
     return count;
   }, [filters]);
 
+  // Use flex layout for kanban view to constrain height
+  const isKanban = view === "kanban";
+
   return (
-    <div className="space-y-4 min-w-0">
+    <div className={isKanban ? "flex flex-col h-[calc(100vh-5.5rem)] min-w-0 -mb-6" : "space-y-4 min-w-0"}>
       {/* Header */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className={`flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between ${isKanban ? "mb-4" : ""}`}>
         <div>
           <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
             Content
@@ -341,7 +344,7 @@ export default function ContentPage() {
         <Collapsible
           open={filtersOpen}
           onOpenChange={setFiltersOpen}
-          className="group/collapsible rounded-lg border bg-card"
+          className={`group/collapsible rounded-lg border bg-card ${isKanban ? "mb-4" : ""}`}
         >
           <CollapsibleTrigger asChild>
             <button
@@ -374,7 +377,7 @@ export default function ContentPage() {
 
       {/* Results count */}
       {view !== "calendar" && (
-        <div className="text-sm text-muted-foreground">
+        <div className={`text-sm text-muted-foreground ${isKanban ? "mb-4" : ""}`}>
           {isLoading ? (
             <Skeleton className="h-4 w-24" />
           ) : (
@@ -385,15 +388,17 @@ export default function ContentPage() {
 
       {/* Content View */}
       {isLoading ? (
-        <Card>
-          <CardContent className="p-6">
-            <div className="space-y-3">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-12 w-full" />
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+        <div className={isKanban ? "flex-1 min-h-0" : ""}>
+          <Card>
+            <CardContent className="p-6">
+              <div className="space-y-3">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-12 w-full" />
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       ) : view === "list" ? (
         <ContentDataTable
           data={filteredItems}
@@ -407,17 +412,19 @@ export default function ContentPage() {
           onViewComments={handleViewComments}
         />
       ) : view === "kanban" ? (
-        <ContentKanban
-          items={filteredItems}
-          statuses={filterOptions.statuses}
-          onItemClick={handleView}
-          onReorder={handleReorder}
-          onEditAssignments={handleEditAssignments}
-          onEditDates={handleEditDates}
-          onViewAttachments={handleViewAttachments}
-          onViewComments={handleViewComments}
-          onDelete={canDelete ? handleDelete : undefined}
-        />
+        <div className="flex-1 min-h-0 flex">
+          <ContentKanban
+            items={filteredItems}
+            statuses={filterOptions.statuses}
+            onItemClick={handleView}
+            onReorder={handleReorder}
+            onEditAssignments={handleEditAssignments}
+            onEditDates={handleEditDates}
+            onViewAttachments={handleViewAttachments}
+            onViewComments={handleViewComments}
+            onDelete={canDelete ? handleDelete : undefined}
+          />
+        </div>
       ) : (
         <ContentCalendar
           items={calendarItems}

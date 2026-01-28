@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Loader2, FileText, Settings, Users, Calendar, Paperclip, MessageSquare, Package } from "lucide-react";
+import { Loader2, FileText, Settings, Users, Calendar, Paperclip, MessageSquare, Package, Link as LinkIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -27,6 +27,7 @@ import { DetailsTab } from "./tabs/details-tab";
 import { AssignmentsTab } from "./tabs/assignments-tab";
 import { DatesTab } from "./tabs/dates-tab";
 import { AttachmentsTab } from "./tabs/attachments-tab";
+import { LinksTab } from "./tabs/links-tab";
 import { ProductsTab } from "./tabs/products-tab";
 import { CommentsPanel } from "./comments-panel";
 
@@ -131,7 +132,6 @@ export function ContentEditModal({
           notes: initialData?.notes || null,
           storyblok_url: initialData?.storyblok_url || null,
           body: initialData?.body || null,
-          brief_id: initialData?.brief_id || null,
         });
         setAttachments([]);
         setLinks([]);
@@ -267,7 +267,7 @@ export function ContentEditModal({
               onValueChange={setActiveTab}
               className="flex flex-col h-full"
             >
-              <TabsList className={`grid w-full ${isBestList ? "grid-cols-6 md:grid-cols-6" : "grid-cols-5 md:grid-cols-5"} rounded-none border-b px-2 h-auto py-1 bg-transparent`}>
+              <TabsList className={`grid w-full ${isBestList ? "grid-cols-7 md:grid-cols-7" : "grid-cols-6 md:grid-cols-6"} rounded-none border-b px-2 h-auto py-1 bg-transparent`}>
                 <TabsTrigger
                   value="content"
                   className="gap-1.5 data-[state=active]:bg-muted rounded-md py-2"
@@ -311,6 +311,13 @@ export function ContentEditModal({
                 >
                   <Paperclip className="h-4 w-4" />
                   <span className="hidden sm:inline">Files</span>
+                </TabsTrigger>
+                <TabsTrigger
+                  value="links"
+                  className="gap-1.5 data-[state=active]:bg-muted rounded-md py-2"
+                >
+                  <LinkIcon className="h-4 w-4" />
+                  <span className="hidden sm:inline">Links</span>
                 </TabsTrigger>
                 {/* Mobile-only comments tab */}
                 <TabsTrigger
@@ -365,11 +372,17 @@ export function ContentEditModal({
                   <AttachmentsTab
                     contentItemId={contentItemId}
                     attachments={attachments}
-                    links={links}
                     onAttachmentsChange={setAttachments}
-                    onLinksChange={setLinks}
                     pendingFiles={pendingFiles}
                     onPendingFilesChange={setPendingFiles}
+                  />
+                </TabsContent>
+
+                <TabsContent value="links" className="mt-0">
+                  <LinksTab
+                    contentItemId={contentItemId}
+                    links={links}
+                    onLinksChange={setLinks}
                     pendingLinks={pendingLinks}
                     onPendingLinksChange={setPendingLinks}
                   />

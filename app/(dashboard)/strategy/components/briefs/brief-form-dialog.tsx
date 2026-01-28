@@ -53,6 +53,7 @@ export function BriefFormDialog({
   const [formData, setFormData] = useState<ContentBriefInput>({
     title: "",
     summary: null,
+    source: null,
     target_audience: null,
     content_goals: null,
     tone_and_style: null,
@@ -71,6 +72,7 @@ export function BriefFormDialog({
       setFormData({
         title: brief.title,
         summary: brief.summary,
+        source: brief.source,
         target_audience: brief.target_audience,
         content_goals: brief.content_goals,
         tone_and_style: brief.tone_and_style,
@@ -88,6 +90,7 @@ export function BriefFormDialog({
       setFormData({
         title: "",
         summary: null,
+        source: null,
         target_audience: null,
         content_goals: null,
         tone_and_style: null,
@@ -266,6 +269,22 @@ export function BriefFormDialog({
                 />
               </div>
 
+              {/* Source (from idea) */}
+              <div className="grid gap-2">
+                <Label htmlFor="source">Source</Label>
+                <Input
+                  id="source"
+                  value={formData.source || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      source: e.target.value || null,
+                    })
+                  }
+                  placeholder="Where did this idea come from?"
+                />
+              </div>
+
               {/* SEO Section */}
               <div className="space-y-4 pt-2 border-t">
                 <h4 className="text-sm font-medium">SEO & Keywords</h4>
@@ -326,10 +345,10 @@ export function BriefFormDialog({
 
               {/* Audience Section */}
               <div className="space-y-4 pt-2 border-t">
-                <h4 className="text-sm font-medium">Target Audience</h4>
+                <h4 className="text-sm font-medium">Audience & Goals</h4>
 
                 <div className="grid gap-2">
-                  <Label htmlFor="target_audience">Audience Description</Label>
+                  <Label htmlFor="target_audience">Target Audience</Label>
                   <Textarea
                     id="target_audience"
                     value={formData.target_audience || ""}

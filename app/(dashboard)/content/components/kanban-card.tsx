@@ -93,6 +93,7 @@ export function KanbanCard({
     <Card
       ref={setNodeRef}
       style={style}
+      data-kanban-card
       className={cn(
         "py-0 cursor-pointer transition-shadow hover:shadow-md group",
         isDragging && "opacity-50 shadow-lg",

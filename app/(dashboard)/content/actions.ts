@@ -23,11 +23,15 @@ export async function getContentItems(): Promise<ContentItem[]> {
   const supabase = await createClient();
 
   const { data, error } = await supabase
-    .from("cp_content_items")
+    .from("cp_content")
     .select(`
       id,
       title,
       slug,
+      description,
+      stage,
+      idea_status,
+      brief_status,
       priority,
       due_date,
       scheduled_date,
@@ -37,15 +41,37 @@ export async function getContentItems(): Promise<ContentItem[]> {
       storyblok_url,
       body,
       display_order,
+      metadata,
+      source,
+      potential_keywords,
+      target_audience,
+      estimated_effort,
+      vote_count,
+      votes,
+      rejection_reason,
+      primary_keyword,
+      secondary_keywords,
+      search_intent,
+      target_word_count,
+      content_goals,
+      tone_and_style,
+      outline,
+      required_sections,
+      internal_links,
+      external_references,
+      competitor_examples,
+      seo_metadata,
+      social_metadata,
       created_at,
       updated_at,
       content_type:cp_content_types(id, slug, name, description, icon, is_active),
       workflow_status:cp_workflow_statuses(id, slug, name, description, color, is_initial, is_terminal, allowed_transitions, display_order),
       campaign:cp_campaigns(id, name, color),
       tags:cp_content_tags(tag:cp_tags(id, slug, name, color, tag_group)),
-      attachments:cp_content_attachments(id, content_item_id, storage_path, file_name, file_size, mime_type, uploaded_by, created_at),
-      links:cp_content_links(id, content_item_id, url, name, description, link_type, display_order, created_by, created_at)
+      attachments:cp_content_attachments(id, content_id, storage_path, file_name, file_size, mime_type, uploaded_by, created_at),
+      links:cp_content_links(id, content_id, url, name, description, link_type, display_order, created_by, created_at)
     `)
+    .eq("stage", "content")
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -61,8 +87,8 @@ export async function getContentItems(): Promise<ContentItem[]> {
   if (contentIds.length > 0) {
     const { data: assignments } = await supabase
       .from("cp_content_assignments")
-      .select("id, content_item_id, user_id, role, assigned_at, notes")
-      .in("content_item_id", contentIds);
+      .select("id, content_id, user_id, role, assigned_at, notes")
+      .in("content_id", contentIds);
 
     // Get unique user IDs from assignments
     const userIds = [...new Set((assignments || []).map((a) => a.user_id))];
@@ -84,14 +110,14 @@ export async function getContentItems(): Promise<ContentItem[]> {
       });
     }
 
-    // Group assignments by content_item_id
+    // Group assignments by content_id
     (assignments || []).forEach((a) => {
-      if (!assignmentsByItem[a.content_item_id]) {
-        assignmentsByItem[a.content_item_id] = [];
+      if (!assignmentsByItem[a.content_id]) {
+        assignmentsByItem[a.content_id] = [];
       }
-      assignmentsByItem[a.content_item_id].push({
+      assignmentsByItem[a.content_id].push({
         id: a.id,
-        content_item_id: a.content_item_id,
+        content_id: a.content_id,
         user_id: a.user_id,
         user: usersById[a.user_id] || { id: a.user_id, email: "", display_name: null, avatar_url: null },
         role: a.role as AssignmentRole,
@@ -106,6 +132,10 @@ export async function getContentItems(): Promise<ContentItem[]> {
     id: item.id,
     title: item.title,
     slug: item.slug,
+    description: item.description,
+    stage: item.stage,
+    idea_status: item.idea_status,
+    brief_status: item.brief_status,
     content_type: item.content_type || null,
     workflow_status: item.workflow_status || null,
     campaign: item.campaign || null,
@@ -119,6 +149,29 @@ export async function getContentItems(): Promise<ContentItem[]> {
     storyblok_url: item.storyblok_url,
     body: item.body || null,
     display_order: item.display_order ?? 0,
+    metadata: item.metadata || {},
+    // Idea fields
+    source: item.source,
+    potential_keywords: item.potential_keywords || [],
+    target_audience: item.target_audience,
+    estimated_effort: item.estimated_effort,
+    vote_count: item.vote_count || 0,
+    votes: item.votes || [],
+    rejection_reason: item.rejection_reason,
+    // Brief/SEO fields
+    primary_keyword: item.primary_keyword,
+    secondary_keywords: item.secondary_keywords || [],
+    search_intent: item.search_intent,
+    target_word_count: item.target_word_count,
+    content_goals: item.content_goals,
+    tone_and_style: item.tone_and_style,
+    outline: item.outline || [],
+    required_sections: item.required_sections || [],
+    internal_links: item.internal_links || [],
+    external_references: item.external_references || [],
+    competitor_examples: item.competitor_examples || [],
+    seo_metadata: item.seo_metadata || {},
+    social_metadata: item.social_metadata || {},
     tags: (item.tags || []).map((t: { tag: unknown }) => t.tag).filter(Boolean),
     attachments: item.attachments || [],
     links: (item.links || []).sort((a: { display_order: number }, b: { display_order: number }) => a.display_order - b.display_order),
@@ -256,14 +309,15 @@ export async function createContentItem(
   }
 
   const { data, error } = await supabase
-    .from("cp_content_items")
+    .from("cp_content")
     .insert({
       title: input.title,
       slug: input.slug,
+      description: input.description,
+      stage: "content",
       content_type_id: input.content_type_id,
       workflow_status_id: workflowStatusId,
       campaign_id: input.campaign_id,
-      brief_id: input.brief_id,
       priority: input.priority || "medium",
       due_date: input.due_date,
       scheduled_date: input.scheduled_date,
@@ -271,6 +325,15 @@ export async function createContentItem(
       notes: input.notes,
       storyblok_url: input.storyblok_url,
       body: input.body,
+      // SEO fields can be set from input if provided
+      primary_keyword: input.primary_keyword,
+      secondary_keywords: input.secondary_keywords,
+      target_audience: input.target_audience,
+      content_goals: input.content_goals,
+      tone_and_style: input.tone_and_style,
+      outline: input.outline,
+      internal_links: input.internal_links,
+      external_references: input.external_references,
     })
     .select("id")
     .single();
@@ -291,14 +354,14 @@ export async function updateContentItem(
   const supabase = await createClient();
 
   const { error } = await supabase
-    .from("cp_content_items")
+    .from("cp_content")
     .update({
       ...(input.title !== undefined && { title: input.title }),
       ...(input.slug !== undefined && { slug: input.slug }),
+      ...(input.description !== undefined && { description: input.description }),
       ...(input.content_type_id !== undefined && { content_type_id: input.content_type_id }),
       ...(input.workflow_status_id !== undefined && { workflow_status_id: input.workflow_status_id }),
       ...(input.campaign_id !== undefined && { campaign_id: input.campaign_id }),
-      ...(input.brief_id !== undefined && { brief_id: input.brief_id }),
       ...(input.priority !== undefined && { priority: input.priority }),
       ...(input.due_date !== undefined && { due_date: input.due_date }),
       ...(input.scheduled_date !== undefined && { scheduled_date: input.scheduled_date }),
@@ -306,8 +369,18 @@ export async function updateContentItem(
       ...(input.notes !== undefined && { notes: input.notes }),
       ...(input.storyblok_url !== undefined && { storyblok_url: input.storyblok_url }),
       ...(input.body !== undefined && { body: input.body }),
+      // SEO fields
+      ...(input.primary_keyword !== undefined && { primary_keyword: input.primary_keyword }),
+      ...(input.secondary_keywords !== undefined && { secondary_keywords: input.secondary_keywords }),
+      ...(input.target_audience !== undefined && { target_audience: input.target_audience }),
+      ...(input.content_goals !== undefined && { content_goals: input.content_goals }),
+      ...(input.tone_and_style !== undefined && { tone_and_style: input.tone_and_style }),
+      ...(input.outline !== undefined && { outline: input.outline }),
+      ...(input.internal_links !== undefined && { internal_links: input.internal_links }),
+      ...(input.external_references !== undefined && { external_references: input.external_references }),
     })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("stage", "content");
 
   if (error) {
     console.error("Error updating content item:", error);
@@ -324,9 +397,10 @@ export async function deleteContentItem(
   const supabase = await createClient();
 
   const { error } = await supabase
-    .from("cp_content_items")
+    .from("cp_content")
     .delete()
-    .eq("id", id);
+    .eq("id", id)
+    .eq("stage", "content");
 
   if (error) {
     console.error("Error deleting content item:", error);
@@ -338,7 +412,7 @@ export async function deleteContentItem(
 }
 
 export async function changeWorkflowStatus(
-  contentItemId: number,
+  contentId: number,
   newStatusId: number
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient();
@@ -348,18 +422,20 @@ export async function changeWorkflowStatus(
 
   // Get current status for transition logging
   const { data: currentItem } = await supabase
-    .from("cp_content_items")
+    .from("cp_content")
     .select("workflow_status_id")
-    .eq("id", contentItemId)
+    .eq("id", contentId)
+    .eq("stage", "content")
     .single();
 
   const fromStatusId = currentItem?.workflow_status_id;
 
   // Update the status
   const { error: updateError } = await supabase
-    .from("cp_content_items")
+    .from("cp_content")
     .update({ workflow_status_id: newStatusId })
-    .eq("id", contentItemId);
+    .eq("id", contentId)
+    .eq("stage", "content");
 
   if (updateError) {
     console.error("Error changing workflow status:", updateError);
@@ -369,7 +445,7 @@ export async function changeWorkflowStatus(
   // Log the transition
   if (fromStatusId) {
     await supabase.from("cp_workflow_transitions").insert({
-      content_item_id: contentItemId,
+      content_id: contentId,
       from_status_id: fromStatusId,
       to_status_id: newStatusId,
       transitioned_by: user?.id,
@@ -397,7 +473,7 @@ export async function reorderContentItems(
     // If status is changing, get current status for transition logging
     if (update.workflow_status_id !== undefined) {
       const { data: currentItem } = await supabase
-        .from("cp_content_items")
+        .from("cp_content")
         .select("workflow_status_id")
         .eq("id", update.id)
         .single();
@@ -407,7 +483,7 @@ export async function reorderContentItems(
       updateData.workflow_status_id = update.workflow_status_id;
 
       const { error } = await supabase
-        .from("cp_content_items")
+        .from("cp_content")
         .update(updateData)
         .eq("id", update.id);
 
@@ -419,7 +495,7 @@ export async function reorderContentItems(
       // Log transition if status changed
       if (fromStatusId && fromStatusId !== update.workflow_status_id) {
         await supabase.from("cp_workflow_transitions").insert({
-          content_item_id: update.id,
+          content_id: update.id,
           from_status_id: fromStatusId,
           to_status_id: update.workflow_status_id,
           transitioned_by: user?.id,
@@ -427,7 +503,7 @@ export async function reorderContentItems(
       }
     } else {
       const { error } = await supabase
-        .from("cp_content_items")
+        .from("cp_content")
         .update(updateData)
         .eq("id", update.id);
 
@@ -464,7 +540,7 @@ export async function getAttachmentUrl(
 }
 
 export async function uploadAttachment(
-  contentItemId: number,
+  contentId: number,
   formData: FormData
 ): Promise<{ success: boolean; error?: string; attachment?: ContentAttachment }> {
   const supabase = await createClient();
@@ -479,7 +555,7 @@ export async function uploadAttachment(
 
   const timestamp = Date.now();
   const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_");
-  const storagePath = `content-items/${contentItemId}/${timestamp}-${safeName}`;
+  const storagePath = `content/${contentId}/${timestamp}-${safeName}`;
 
   // Upload to storage
   const { error: uploadError } = await supabase.storage
@@ -495,7 +571,7 @@ export async function uploadAttachment(
   const { data, error: dbError } = await supabase
     .from("cp_content_attachments")
     .insert({
-      content_item_id: contentItemId,
+      content_id: contentId,
       storage_path: storagePath,
       file_name: file.name,
       file_size: file.size,
@@ -563,7 +639,7 @@ export async function deleteAttachment(
 // ============================================================================
 
 export async function addContentLink(
-  contentItemId: number,
+  contentId: number,
   link: ContentLinkInput
 ): Promise<{ success: boolean; error?: string; link?: ContentLink }> {
   const supabase = await createClient();
@@ -575,7 +651,7 @@ export async function addContentLink(
   const { data: existingLinks } = await supabase
     .from("cp_content_links")
     .select("display_order")
-    .eq("content_item_id", contentItemId)
+    .eq("content_id", contentId)
     .order("display_order", { ascending: false })
     .limit(1);
 
@@ -584,7 +660,7 @@ export async function addContentLink(
   const { data, error } = await supabase
     .from("cp_content_links")
     .insert({
-      content_item_id: contentItemId,
+      content_id: contentId,
       url: link.url,
       name: link.name,
       description: link.description,
@@ -654,7 +730,7 @@ export async function deleteContentLink(
 // ============================================================================
 
 export async function getComments(
-  contentItemId: number,
+  contentId: number,
   search?: string
 ): Promise<Comment[]> {
   const supabase = await createClient();
@@ -678,7 +754,7 @@ export async function getComments(
       updated_at
     `)
     .eq("commentable_type", "content_item")
-    .eq("commentable_id", contentItemId)
+    .eq("commentable_id", contentId)
     .order("created_at", { ascending: true });
 
   if (search) {
@@ -739,7 +815,7 @@ function extractMentions(text: string): string[] {
 }
 
 export async function addComment(
-  contentItemId: number,
+  contentId: number,
   body: string,
   attachmentFiles?: FormData
 ): Promise<{ success: boolean; error?: string; comment?: Comment }> {
@@ -780,7 +856,7 @@ export async function addComment(
     .from("cp_comments")
     .insert({
       commentable_type: "content_item",
-      commentable_id: contentItemId,
+      commentable_id: contentId,
       body,
       author_id: user.id,
       author_email: user.email,
@@ -838,15 +914,15 @@ export async function addComment(
   (async () => {
     try {
       const { data: contentItem } = await supabase
-        .from("cp_content_items")
+        .from("cp_content")
         .select("title")
-        .eq("id", contentItemId)
+        .eq("id", contentId)
         .single();
 
       if (contentItem) {
         // Notify assigned and mentioned users (consolidated to avoid duplicates)
         await notifyComment(
-          contentItemId,
+          contentId,
           contentItem.title,
           body,
           data.id,
@@ -931,14 +1007,14 @@ export async function deleteComment(
 // ============================================================================
 
 export async function getAssignments(
-  contentItemId: number
+  contentId: number
 ): Promise<ContentAssignment[]> {
   const supabase = await createClient();
 
   const { data: assignments, error } = await supabase
     .from("cp_content_assignments")
-    .select("id, content_item_id, user_id, role, assigned_at, notes")
-    .eq("content_item_id", contentItemId);
+    .select("id, content_id, user_id, role, assigned_at, notes")
+    .eq("content_id", contentId);
 
   if (error) {
     console.error("Error fetching assignments:", error);
@@ -967,7 +1043,7 @@ export async function getAssignments(
 
   return (assignments || []).map((a) => ({
     id: a.id,
-    content_item_id: a.content_item_id,
+    content_id: a.content_id,
     user_id: a.user_id,
     user: usersById[a.user_id] || { id: a.user_id, email: "", display_name: null, avatar_url: null },
     role: a.role as AssignmentRole,
@@ -977,7 +1053,7 @@ export async function getAssignments(
 }
 
 export async function addAssignment(
-  contentItemId: number,
+  contentId: number,
   input: AssignmentInput
 ): Promise<{ success: boolean; error?: string; assignment?: ContentAssignment }> {
   const supabase = await createClient();
@@ -988,13 +1064,13 @@ export async function addAssignment(
   const { data, error } = await supabase
     .from("cp_content_assignments")
     .insert({
-      content_item_id: contentItemId,
+      content_id: contentId,
       user_id: input.user_id,
       role: input.role,
       assigned_by: user?.id,
       notes: input.notes,
     })
-    .select("id, content_item_id, user_id, role, assigned_at, notes")
+    .select("id, content_id, user_id, role, assigned_at, notes")
     .single();
 
   if (error) {
@@ -1014,15 +1090,15 @@ export async function addAssignment(
     (async () => {
       try {
         const { data: contentItem } = await supabase
-          .from("cp_content_items")
+          .from("cp_content")
           .select("title")
-          .eq("id", contentItemId)
+          .eq("id", contentId)
           .single();
 
         if (contentItem) {
           await notifyAssignment(
             input.user_id,
-            contentItemId,
+            contentId,
             contentItem.title,
             input.role,
             user.id
@@ -1039,7 +1115,7 @@ export async function addAssignment(
     success: true,
     assignment: {
       id: data.id,
-      content_item_id: data.content_item_id,
+      content_id: data.content_id,
       user_id: data.user_id,
       user: userData || { id: input.user_id, email: "", display_name: null, avatar_url: null },
       role: data.role as AssignmentRole,
@@ -1069,7 +1145,7 @@ export async function removeAssignment(
 }
 
 export async function updateAssignments(
-  contentItemId: number,
+  contentId: number,
   assignments: AssignmentInput[]
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient();
@@ -1081,7 +1157,7 @@ export async function updateAssignments(
   const { error: deleteError } = await supabase
     .from("cp_content_assignments")
     .delete()
-    .eq("content_item_id", contentItemId);
+    .eq("content_id", contentId);
 
   if (deleteError) {
     console.error("Error clearing assignments:", deleteError);
@@ -1094,7 +1170,7 @@ export async function updateAssignments(
       .from("cp_content_assignments")
       .insert(
         assignments.map((a) => ({
-          content_item_id: contentItemId,
+          content_id: contentId,
           user_id: a.user_id,
           role: a.role,
           assigned_by: user?.id,

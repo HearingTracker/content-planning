@@ -22,7 +22,7 @@ export async function getStrategyFilterOptions(): Promise<StrategyFilterOptions>
   const [typesRes, campaignsRes] = await Promise.all([
     supabase
       .from("cp_content_types")
-      .select("id, slug, name, icon")
+      .select("id, slug, name, description, icon, is_active")
       .eq("is_active", true)
       .order("display_order"),
     supabase
@@ -195,14 +195,14 @@ export async function quickCreateCampaign(
 }
 
 // ============================================================================
-// Ideas
+// Ideas (now from cp_content with stage='idea')
 // ============================================================================
 
 export async function getIdeas(): Promise<ContentIdea[]> {
   const supabase = await createClient();
 
   const { data, error } = await supabase
-    .from("cp_content_ideas")
+    .from("cp_content")
     .select(`
       id,
       title,
@@ -212,7 +212,7 @@ export async function getIdeas(): Promise<ContentIdea[]> {
       target_audience,
       estimated_effort,
       priority,
-      status,
+      idea_status,
       vote_count,
       votes,
       rejection_reason,
@@ -222,6 +222,7 @@ export async function getIdeas(): Promise<ContentIdea[]> {
       content_type:cp_content_types(id, slug, name, icon),
       campaign:cp_campaigns(id, name, color)
     `)
+    .eq("stage", "idea")
     .order("vote_count", { ascending: false })
     .order("created_at", { ascending: false });
 
@@ -232,9 +233,21 @@ export async function getIdeas(): Promise<ContentIdea[]> {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (data || []).map((idea: any) => ({
-    ...idea,
+    id: idea.id,
+    title: idea.title,
+    description: idea.description,
+    source: idea.source,
     potential_keywords: idea.potential_keywords || [],
+    target_audience: idea.target_audience,
+    estimated_effort: idea.estimated_effort,
+    priority: idea.priority || "medium",
+    status: idea.idea_status || "submitted",
+    vote_count: idea.vote_count || 0,
     votes: idea.votes || [],
+    rejection_reason: idea.rejection_reason,
+    notes: idea.notes,
+    created_at: idea.created_at,
+    updated_at: idea.updated_at,
     content_type: idea.content_type || null,
     campaign: idea.campaign || null,
   })) as ContentIdea[];
@@ -249,16 +262,17 @@ export async function createIdea(
   } = await supabase.auth.getUser();
 
   const { data, error } = await supabase
-    .from("cp_content_ideas")
+    .from("cp_content")
     .insert({
       title: input.title,
       description: input.description,
+      stage: "idea",
+      idea_status: input.status || "submitted",
       source: input.source,
       potential_keywords: input.potential_keywords || [],
       target_audience: input.target_audience,
       estimated_effort: input.estimated_effort,
       priority: input.priority || "medium",
-      status: input.status || "submitted",
       content_type_id: input.content_type_id,
       campaign_id: input.campaign_id,
       notes: input.notes,
@@ -283,7 +297,7 @@ export async function updateIdea(
   const supabase = await createClient();
 
   const { error } = await supabase
-    .from("cp_content_ideas")
+    .from("cp_content")
     .update({
       ...(input.title !== undefined && { title: input.title }),
       ...(input.description !== undefined && { description: input.description }),
@@ -298,14 +312,15 @@ export async function updateIdea(
         estimated_effort: input.estimated_effort,
       }),
       ...(input.priority !== undefined && { priority: input.priority }),
-      ...(input.status !== undefined && { status: input.status }),
+      ...(input.status !== undefined && { idea_status: input.status }),
       ...(input.content_type_id !== undefined && {
         content_type_id: input.content_type_id,
       }),
       ...(input.campaign_id !== undefined && { campaign_id: input.campaign_id }),
       ...(input.notes !== undefined && { notes: input.notes }),
     })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("stage", "idea");
 
   if (error) {
     console.error("Error updating idea:", error);
@@ -321,7 +336,11 @@ export async function deleteIdea(
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient();
 
-  const { error } = await supabase.from("cp_content_ideas").delete().eq("id", id);
+  const { error } = await supabase
+    .from("cp_content")
+    .delete()
+    .eq("id", id)
+    .eq("stage", "idea");
 
   if (error) {
     console.error("Error deleting idea:", error);
@@ -347,9 +366,10 @@ export async function voteOnIdea(
 
   // Get current idea
   const { data: idea, error: fetchError } = await supabase
-    .from("cp_content_ideas")
+    .from("cp_content")
     .select("votes, vote_count")
     .eq("id", ideaId)
+    .eq("stage", "idea")
     .single();
 
   if (fetchError || !idea) {
@@ -387,12 +407,13 @@ export async function voteOnIdea(
   }
 
   const { error } = await supabase
-    .from("cp_content_ideas")
+    .from("cp_content")
     .update({
       votes: newVotes,
       vote_count: (idea.vote_count || 0) + voteDelta,
     })
-    .eq("id", ideaId);
+    .eq("id", ideaId)
+    .eq("stage", "idea");
 
   if (error) {
     console.error("Error voting on idea:", error);
@@ -404,19 +425,20 @@ export async function voteOnIdea(
 }
 
 // ============================================================================
-// Briefs
+// Briefs (now from cp_content with stage='brief')
 // ============================================================================
 
 export async function getBriefs(): Promise<ContentBrief[]> {
   const supabase = await createClient();
 
   const { data, error } = await supabase
-    .from("cp_content_briefs")
+    .from("cp_content")
     .select(`
       id,
       title,
       slug,
-      summary,
+      description,
+      source,
       target_audience,
       content_goals,
       tone_and_style,
@@ -428,15 +450,15 @@ export async function getBriefs(): Promise<ContentBrief[]> {
       required_sections,
       internal_links,
       external_references,
-      status,
+      brief_status,
       competitor_examples,
       notes,
       created_at,
       updated_at,
       content_type:cp_content_types(id, slug, name, icon),
-      campaign:cp_campaigns(id, name, color),
-      idea:cp_content_ideas(id, title)
+      campaign:cp_campaigns(id, name, color)
     `)
+    .eq("stage", "brief")
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -446,16 +468,30 @@ export async function getBriefs(): Promise<ContentBrief[]> {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (data || []).map((brief: any) => ({
-    ...brief,
+    id: brief.id,
+    title: brief.title,
+    slug: brief.slug,
+    summary: brief.description, // description maps to summary for briefs
+    source: brief.source,
+    target_audience: brief.target_audience,
+    content_goals: brief.content_goals,
+    tone_and_style: brief.tone_and_style,
+    primary_keyword: brief.primary_keyword,
     secondary_keywords: brief.secondary_keywords || [],
+    search_intent: brief.search_intent,
+    target_word_count: brief.target_word_count,
     outline: brief.outline || [],
     required_sections: brief.required_sections || [],
     internal_links: brief.internal_links || [],
     external_references: brief.external_references || [],
+    status: brief.brief_status || "draft",
     competitor_examples: brief.competitor_examples || [],
+    notes: brief.notes,
+    created_at: brief.created_at,
+    updated_at: brief.updated_at,
     content_type: brief.content_type || null,
     campaign: brief.campaign || null,
-    idea: brief.idea || null,
+    idea: null, // No longer separate entity reference
   })) as ContentBrief[];
 }
 
@@ -463,12 +499,13 @@ export async function getBrief(id: number): Promise<ContentBrief | null> {
   const supabase = await createClient();
 
   const { data, error } = await supabase
-    .from("cp_content_briefs")
+    .from("cp_content")
     .select(`
       id,
       title,
       slug,
-      summary,
+      description,
+      source,
       target_audience,
       content_goals,
       tone_and_style,
@@ -480,16 +517,16 @@ export async function getBrief(id: number): Promise<ContentBrief | null> {
       required_sections,
       internal_links,
       external_references,
-      status,
+      brief_status,
       competitor_examples,
       notes,
       created_at,
       updated_at,
       content_type:cp_content_types(id, slug, name, icon),
-      campaign:cp_campaigns(id, name, color),
-      idea:cp_content_ideas(id, title)
+      campaign:cp_campaigns(id, name, color)
     `)
     .eq("id", id)
+    .eq("stage", "brief")
     .single();
 
   if (error || !data) {
@@ -500,16 +537,30 @@ export async function getBrief(id: number): Promise<ContentBrief | null> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const brief = data as any;
   return {
-    ...brief,
+    id: brief.id,
+    title: brief.title,
+    slug: brief.slug,
+    summary: brief.description,
+    source: brief.source,
+    target_audience: brief.target_audience,
+    content_goals: brief.content_goals,
+    tone_and_style: brief.tone_and_style,
+    primary_keyword: brief.primary_keyword,
     secondary_keywords: brief.secondary_keywords || [],
+    search_intent: brief.search_intent,
+    target_word_count: brief.target_word_count,
     outline: brief.outline || [],
     required_sections: brief.required_sections || [],
     internal_links: brief.internal_links || [],
     external_references: brief.external_references || [],
+    status: brief.brief_status || "draft",
     competitor_examples: brief.competitor_examples || [],
+    notes: brief.notes,
+    created_at: brief.created_at,
+    updated_at: brief.updated_at,
     content_type: brief.content_type || null,
     campaign: brief.campaign || null,
-    idea: brief.idea || null,
+    idea: null,
   } as ContentBrief;
 }
 
@@ -524,11 +575,13 @@ export async function createBrief(
   const slug = input.slug || input.title.toLowerCase().replace(/\s+/g, "-");
 
   const { data, error } = await supabase
-    .from("cp_content_briefs")
+    .from("cp_content")
     .insert({
       title: input.title,
       slug,
-      summary: input.summary,
+      description: input.summary, // summary maps to description
+      stage: "brief",
+      brief_status: input.status || "draft",
       target_audience: input.target_audience,
       content_goals: input.content_goals,
       tone_and_style: input.tone_and_style,
@@ -538,10 +591,8 @@ export async function createBrief(
       target_word_count: input.target_word_count,
       outline: input.outline || [],
       required_sections: input.required_sections || [],
-      status: input.status || "draft",
       content_type_id: input.content_type_id,
       campaign_id: input.campaign_id,
-      idea_id: input.idea_id,
       notes: input.notes,
       created_by: user?.id,
     })
@@ -551,14 +602,6 @@ export async function createBrief(
   if (error) {
     console.error("Error creating brief:", error);
     return { success: false, error: error.message };
-  }
-
-  // If creating from an idea, mark the idea as converted
-  if (input.idea_id) {
-    await supabase
-      .from("cp_content_ideas")
-      .update({ status: "converted" })
-      .eq("id", input.idea_id);
   }
 
   revalidatePath("/strategy");
@@ -572,11 +615,12 @@ export async function updateBrief(
   const supabase = await createClient();
 
   const { error } = await supabase
-    .from("cp_content_briefs")
+    .from("cp_content")
     .update({
       ...(input.title !== undefined && { title: input.title }),
       ...(input.slug !== undefined && { slug: input.slug }),
-      ...(input.summary !== undefined && { summary: input.summary }),
+      ...(input.summary !== undefined && { description: input.summary }),
+      ...(input.source !== undefined && { source: input.source }),
       ...(input.target_audience !== undefined && {
         target_audience: input.target_audience,
       }),
@@ -602,14 +646,15 @@ export async function updateBrief(
       ...(input.required_sections !== undefined && {
         required_sections: input.required_sections,
       }),
-      ...(input.status !== undefined && { status: input.status }),
+      ...(input.status !== undefined && { brief_status: input.status }),
       ...(input.content_type_id !== undefined && {
         content_type_id: input.content_type_id,
       }),
       ...(input.campaign_id !== undefined && { campaign_id: input.campaign_id }),
       ...(input.notes !== undefined && { notes: input.notes }),
     })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("stage", "brief");
 
   if (error) {
     console.error("Error updating brief:", error);
@@ -625,7 +670,11 @@ export async function deleteBrief(
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient();
 
-  const { error } = await supabase.from("cp_content_briefs").delete().eq("id", id);
+  const { error } = await supabase
+    .from("cp_content")
+    .delete()
+    .eq("id", id)
+    .eq("stage", "brief");
 
   if (error) {
     console.error("Error deleting brief:", error);
@@ -637,40 +686,110 @@ export async function deleteBrief(
 }
 
 // ============================================================================
-// Convert Idea to Brief
+// Promote Content (replaces convertIdeaToBrief)
 // ============================================================================
 
+/**
+ * Promote content from one stage to the next
+ * idea -> brief: Sets brief_status to 'draft', idea_status to 'converted'
+ * brief -> content: Sets workflow_status to initial status, brief_status to 'completed'
+ */
+export async function promoteContent(
+  id: number,
+  toStage: "brief" | "content"
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // Get current content
+  const { data: content, error: fetchError } = await supabase
+    .from("cp_content")
+    .select("stage, title")
+    .eq("id", id)
+    .single();
+
+  if (fetchError || !content) {
+    return { success: false, error: "Content not found" };
+  }
+
+  // Validate stage transition
+  if (toStage === "brief" && content.stage !== "idea") {
+    return { success: false, error: "Can only promote ideas to briefs" };
+  }
+  if (toStage === "content" && content.stage !== "brief") {
+    return { success: false, error: "Can only promote briefs to content" };
+  }
+
+  // Build update based on target stage
+  const updateData: Record<string, unknown> = {
+    stage: toStage,
+  };
+
+  if (toStage === "brief") {
+    // Idea -> Brief: fetch full record to copy keywords
+    const { data: fullContent } = await supabase
+      .from("cp_content")
+      .select("potential_keywords, source")
+      .eq("id", id)
+      .single();
+
+    updateData.idea_status = "converted";
+    updateData.brief_status = "draft";
+
+    // Generate slug if not present
+    const slug = content.title.toLowerCase().replace(/\s+/g, "-");
+    updateData.slug = slug;
+
+    // Copy potential_keywords to secondary_keywords
+    if (fullContent?.potential_keywords && Array.isArray(fullContent.potential_keywords)) {
+      // Handle both formats: plain strings or objects with keyword property
+      updateData.secondary_keywords = fullContent.potential_keywords.map((k: unknown) => {
+        if (typeof k === "string") return k;
+        if (k && typeof k === "object" && "keyword" in k) return (k as { keyword: string }).keyword;
+        return null;
+      }).filter(Boolean);
+    }
+  } else if (toStage === "content") {
+    // Brief -> Content
+    updateData.brief_status = "completed";
+
+    // Get default workflow status
+    const { data: defaultStatus } = await supabase
+      .from("cp_workflow_statuses")
+      .select("id")
+      .eq("is_initial", true)
+      .single();
+
+    if (defaultStatus) {
+      updateData.workflow_status_id = defaultStatus.id;
+    }
+  }
+
+  const { error } = await supabase
+    .from("cp_content")
+    .update(updateData)
+    .eq("id", id);
+
+  if (error) {
+    console.error("Error promoting content:", error);
+    return { success: false, error: error.message };
+  }
+
+  revalidatePath("/strategy");
+  revalidatePath("/content");
+  return { success: true };
+}
+
+// Legacy function - now just calls promoteContent
 export async function convertIdeaToBrief(
   ideaId: number
 ): Promise<{ success: boolean; error?: string; briefId?: number }> {
-  const supabase = await createClient();
-
-  // Get the idea
-  const { data: idea, error: fetchError } = await supabase
-    .from("cp_content_ideas")
-    .select("*")
-    .eq("id", ideaId)
-    .single();
-
-  if (fetchError || !idea) {
-    return { success: false, error: "Idea not found" };
-  }
-
-  // Create a brief from the idea
-  const result = await createBrief({
-    title: idea.title,
-    summary: idea.description,
-    target_audience: idea.target_audience,
-    secondary_keywords: idea.potential_keywords || [],
-    content_type_id: idea.content_type_id,
-    campaign_id: idea.campaign_id,
-    idea_id: ideaId,
-    notes: idea.notes,
-  });
-
+  const result = await promoteContent(ideaId, "brief");
   return {
     success: result.success,
     error: result.error,
-    briefId: result.id,
+    briefId: result.success ? ideaId : undefined, // Same ID since it's the same record
   };
 }

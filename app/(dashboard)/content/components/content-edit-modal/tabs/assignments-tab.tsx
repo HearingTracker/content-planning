@@ -53,7 +53,7 @@ export function AssignmentsTab({
 
     const newAssignment: ContentAssignment = {
       id: Date.now(), // Temporary ID
-      content_item_id: contentItemId,
+      content_id: contentItemId,
       user_id: newUserId,
       user,
       role: newRole,

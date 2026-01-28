@@ -838,7 +838,7 @@ export type Database = {
           assigned_by: string | null
           author_id: number
           completed_at: string | null
-          content_item_id: number
+          content_id: number | null
           created_at: string | null
           due_date: string | null
           id: number
@@ -851,7 +851,7 @@ export type Database = {
           assigned_by?: string | null
           author_id: number
           completed_at?: string | null
-          content_item_id: number
+          content_id?: number | null
           created_at?: string | null
           due_date?: string | null
           id?: never
@@ -864,7 +864,7 @@ export type Database = {
           assigned_by?: string | null
           author_id?: number
           completed_at?: string | null
-          content_item_id?: number
+          content_id?: number | null
           created_at?: string | null
           due_date?: string | null
           id?: never
@@ -873,6 +873,13 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "cp_author_assignments_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "cp_author_assignments_author_id_fkey"
             columns: ["author_id"]
@@ -888,10 +895,64 @@ export type Database = {
             referencedColumns: ["author_id"]
           },
           {
-            foreignKeyName: "cp_author_assignments_content_item_id_fkey"
-            columns: ["content_item_id"]
+            foreignKeyName: "cp_author_assignments_content_id_fkey"
+            columns: ["content_id"]
             isOneToOne: false
-            referencedRelation: "cp_content_items"
+            referencedRelation: "cp_content"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cp_best_list_products: {
+        Row: {
+          content_id: number | null
+          created_at: string
+          custom_product_brand: string | null
+          custom_product_name: string | null
+          id: number
+          label: string | null
+          notes: string | null
+          position: number
+          product_id: number | null
+          updated_at: string
+        }
+        Insert: {
+          content_id?: number | null
+          created_at?: string
+          custom_product_brand?: string | null
+          custom_product_name?: string | null
+          id?: number
+          label?: string | null
+          notes?: string | null
+          position?: number
+          product_id?: number | null
+          updated_at?: string
+        }
+        Update: {
+          content_id?: number | null
+          created_at?: string
+          custom_product_brand?: string | null
+          custom_product_name?: string | null
+          id?: number
+          label?: string | null
+          notes?: string | null
+          position?: number
+          product_id?: number | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cp_best_list_products_content_id_fkey"
+            columns: ["content_id"]
+            isOneToOne: false
+            referencedRelation: "cp_content"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_best_list_products_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
             referencedColumns: ["id"]
           },
         ]
@@ -902,7 +963,7 @@ export type Database = {
           attendees: Json | null
           campaign_id: number | null
           color: string | null
-          content_item_id: number | null
+          content_id: number | null
           created_at: string | null
           created_by: string | null
           description: string | null
@@ -927,7 +988,7 @@ export type Database = {
           attendees?: Json | null
           campaign_id?: number | null
           color?: string | null
-          content_item_id?: number | null
+          content_id?: number | null
           created_at?: string | null
           created_by?: string | null
           description?: string | null
@@ -952,7 +1013,7 @@ export type Database = {
           attendees?: Json | null
           campaign_id?: number | null
           color?: string | null
-          content_item_id?: number | null
+          content_id?: number | null
           created_at?: string | null
           created_by?: string | null
           description?: string | null
@@ -988,10 +1049,17 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "cp_calendar_events_content_item_id_fkey"
-            columns: ["content_item_id"]
+            foreignKeyName: "cp_calendar_events_content_id_fkey"
+            columns: ["content_id"]
             isOneToOne: false
-            referencedRelation: "cp_content_items"
+            referencedRelation: "cp_content"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_calendar_events_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
             referencedColumns: ["id"]
           },
         ]
@@ -1047,6 +1115,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "cp_campaigns_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "cp_campaigns_release_id_fkey"
             columns: ["release_id"]
             isOneToOne: false
@@ -1095,6 +1170,7 @@ export type Database = {
       }
       cp_comments: {
         Row: {
+          author_email: string | null
           author_id: string
           body: string
           body_html: string | null
@@ -1111,6 +1187,7 @@ export type Database = {
           updated_at: string | null
         }
         Insert: {
+          author_email?: string | null
           author_id: string
           body: string
           body_html?: string | null
@@ -1127,6 +1204,7 @@ export type Database = {
           updated_at?: string | null
         }
         Update: {
+          author_email?: string | null
           author_id?: string
           body?: string
           body_html?: string | null
@@ -1144,10 +1222,257 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "cp_comments_author_id_fkey"
+            columns: ["author_id"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "cp_comments_parent_id_fkey"
             columns: ["parent_id"]
             isOneToOne: false
             referencedRelation: "cp_comments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_comments_resolved_by_fkey"
+            columns: ["resolved_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cp_content: {
+        Row: {
+          approved_at: string | null
+          approved_by: string | null
+          body: Json | null
+          brief_status: string | null
+          campaign_id: number | null
+          competitor_examples: Json | null
+          content_goals: string | null
+          content_type_id: number | null
+          created_at: string | null
+          created_by: string | null
+          description: string | null
+          display_order: number | null
+          draft_story_id: number | null
+          due_date: string | null
+          estimated_effort: string | null
+          external_references: Json | null
+          id: number
+          idea_status: string | null
+          internal_links: Json | null
+          metadata: Json | null
+          notes: string | null
+          outline: Json | null
+          potential_keywords: Json | null
+          primary_keyword: string | null
+          priority: string | null
+          publish_date: string | null
+          rejection_reason: string | null
+          release_id: number | null
+          required_sections: Json | null
+          reviewed_at: string | null
+          reviewed_by: string | null
+          scheduled_date: string | null
+          scheduled_time: string | null
+          search_intent: string | null
+          secondary_keywords: Json | null
+          seo_metadata: Json | null
+          slug: string | null
+          social_metadata: Json | null
+          source: string | null
+          stage: string
+          story_id: number | null
+          storyblok_url: string | null
+          submitted_by: string | null
+          target_audience: string | null
+          target_word_count: number | null
+          title: string
+          tone_and_style: string | null
+          updated_at: string | null
+          vote_count: number | null
+          votes: Json | null
+          workflow_status_id: number | null
+        }
+        Insert: {
+          approved_at?: string | null
+          approved_by?: string | null
+          body?: Json | null
+          brief_status?: string | null
+          campaign_id?: number | null
+          competitor_examples?: Json | null
+          content_goals?: string | null
+          content_type_id?: number | null
+          created_at?: string | null
+          created_by?: string | null
+          description?: string | null
+          display_order?: number | null
+          draft_story_id?: number | null
+          due_date?: string | null
+          estimated_effort?: string | null
+          external_references?: Json | null
+          id?: number
+          idea_status?: string | null
+          internal_links?: Json | null
+          metadata?: Json | null
+          notes?: string | null
+          outline?: Json | null
+          potential_keywords?: Json | null
+          primary_keyword?: string | null
+          priority?: string | null
+          publish_date?: string | null
+          rejection_reason?: string | null
+          release_id?: number | null
+          required_sections?: Json | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          scheduled_date?: string | null
+          scheduled_time?: string | null
+          search_intent?: string | null
+          secondary_keywords?: Json | null
+          seo_metadata?: Json | null
+          slug?: string | null
+          social_metadata?: Json | null
+          source?: string | null
+          stage?: string
+          story_id?: number | null
+          storyblok_url?: string | null
+          submitted_by?: string | null
+          target_audience?: string | null
+          target_word_count?: number | null
+          title: string
+          tone_and_style?: string | null
+          updated_at?: string | null
+          vote_count?: number | null
+          votes?: Json | null
+          workflow_status_id?: number | null
+        }
+        Update: {
+          approved_at?: string | null
+          approved_by?: string | null
+          body?: Json | null
+          brief_status?: string | null
+          campaign_id?: number | null
+          competitor_examples?: Json | null
+          content_goals?: string | null
+          content_type_id?: number | null
+          created_at?: string | null
+          created_by?: string | null
+          description?: string | null
+          display_order?: number | null
+          draft_story_id?: number | null
+          due_date?: string | null
+          estimated_effort?: string | null
+          external_references?: Json | null
+          id?: number
+          idea_status?: string | null
+          internal_links?: Json | null
+          metadata?: Json | null
+          notes?: string | null
+          outline?: Json | null
+          potential_keywords?: Json | null
+          primary_keyword?: string | null
+          priority?: string | null
+          publish_date?: string | null
+          rejection_reason?: string | null
+          release_id?: number | null
+          required_sections?: Json | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          scheduled_date?: string | null
+          scheduled_time?: string | null
+          search_intent?: string | null
+          secondary_keywords?: Json | null
+          seo_metadata?: Json | null
+          slug?: string | null
+          social_metadata?: Json | null
+          source?: string | null
+          stage?: string
+          story_id?: number | null
+          storyblok_url?: string | null
+          submitted_by?: string | null
+          target_audience?: string | null
+          target_word_count?: number | null
+          title?: string
+          tone_and_style?: string | null
+          updated_at?: string | null
+          vote_count?: number | null
+          votes?: Json | null
+          workflow_status_id?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cp_content_approved_by_fkey"
+            columns: ["approved_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_content_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "cp_campaign_summary"
+            referencedColumns: ["campaign_id"]
+          },
+          {
+            foreignKeyName: "cp_content_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "cp_campaigns"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_content_content_type_id_fkey"
+            columns: ["content_type_id"]
+            isOneToOne: false
+            referencedRelation: "cp_content_types"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_content_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_content_release_id_fkey"
+            columns: ["release_id"]
+            isOneToOne: false
+            referencedRelation: "releases"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_content_reviewed_by_fkey"
+            columns: ["reviewed_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_content_submitted_by_fkey"
+            columns: ["submitted_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_content_workflow_status_id_fkey"
+            columns: ["workflow_status_id"]
+            isOneToOne: false
+            referencedRelation: "cp_content_pipeline"
+            referencedColumns: ["status_id"]
+          },
+          {
+            foreignKeyName: "cp_content_workflow_status_id_fkey"
+            columns: ["workflow_status_id"]
+            isOneToOne: false
+            referencedRelation: "cp_workflow_statuses"
             referencedColumns: ["id"]
           },
         ]
@@ -1158,7 +1483,7 @@ export type Database = {
           backlinks_count: number | null
           bounce_rate: number | null
           comments_count: number | null
-          content_item_id: number
+          content_id: number | null
           conversion_rate: number | null
           conversions: number | null
           created_at: string | null
@@ -1182,7 +1507,7 @@ export type Database = {
           backlinks_count?: number | null
           bounce_rate?: number | null
           comments_count?: number | null
-          content_item_id: number
+          content_id?: number | null
           conversion_rate?: number | null
           conversions?: number | null
           created_at?: string | null
@@ -1206,7 +1531,7 @@ export type Database = {
           backlinks_count?: number | null
           bounce_rate?: number | null
           comments_count?: number | null
-          content_item_id?: number
+          content_id?: number | null
           conversion_rate?: number | null
           conversions?: number | null
           created_at?: string | null
@@ -1227,17 +1552,75 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cp_content_analytics_content_item_id_fkey"
-            columns: ["content_item_id"]
+            foreignKeyName: "cp_content_analytics_content_id_fkey"
+            columns: ["content_id"]
             isOneToOne: false
-            referencedRelation: "cp_content_items"
+            referencedRelation: "cp_content"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cp_content_assignments: {
+        Row: {
+          assigned_at: string | null
+          assigned_by: string | null
+          content_id: number | null
+          created_at: string | null
+          id: number
+          notes: string | null
+          role: string
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          assigned_at?: string | null
+          assigned_by?: string | null
+          content_id?: number | null
+          created_at?: string | null
+          id?: never
+          notes?: string | null
+          role: string
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          assigned_at?: string | null
+          assigned_by?: string | null
+          content_id?: number | null
+          created_at?: string | null
+          id?: never
+          notes?: string | null
+          role?: string
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cp_content_assignments_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_content_assignments_content_id_fkey"
+            columns: ["content_id"]
+            isOneToOne: false
+            referencedRelation: "cp_content"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_content_assignments_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
             referencedColumns: ["id"]
           },
         ]
       }
       cp_content_attachments: {
         Row: {
-          content_item_id: number
+          content_id: number | null
           created_at: string | null
           file_name: string
           file_size: number | null
@@ -1247,7 +1630,7 @@ export type Database = {
           uploaded_by: string | null
         }
         Insert: {
-          content_item_id: number
+          content_id?: number | null
           created_at?: string | null
           file_name: string
           file_size?: number | null
@@ -1257,7 +1640,7 @@ export type Database = {
           uploaded_by?: string | null
         }
         Update: {
-          content_item_id?: number
+          content_id?: number | null
           created_at?: string | null
           file_name?: string
           file_size?: number | null
@@ -1268,403 +1651,24 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cp_content_attachments_content_item_id_fkey"
-            columns: ["content_item_id"]
+            foreignKeyName: "cp_content_attachments_content_id_fkey"
+            columns: ["content_id"]
             isOneToOne: false
-            referencedRelation: "cp_content_items"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      cp_content_briefs: {
-        Row: {
-          approved_at: string | null
-          approved_by: string | null
-          campaign_id: number | null
-          competitor_examples: Json | null
-          content_goals: string | null
-          content_type_id: number | null
-          created_at: string | null
-          created_by: string | null
-          external_references: Json | null
-          id: number
-          idea_id: number | null
-          internal_links: Json | null
-          metadata: Json | null
-          notes: string | null
-          outline: Json | null
-          primary_keyword: string | null
-          required_sections: Json | null
-          search_intent: string | null
-          secondary_keywords: Json | null
-          slug: string | null
-          status: string | null
-          summary: string | null
-          target_audience: string | null
-          target_word_count: number | null
-          title: string
-          tone_and_style: string | null
-          updated_at: string | null
-        }
-        Insert: {
-          approved_at?: string | null
-          approved_by?: string | null
-          campaign_id?: number | null
-          competitor_examples?: Json | null
-          content_goals?: string | null
-          content_type_id?: number | null
-          created_at?: string | null
-          created_by?: string | null
-          external_references?: Json | null
-          id?: never
-          idea_id?: number | null
-          internal_links?: Json | null
-          metadata?: Json | null
-          notes?: string | null
-          outline?: Json | null
-          primary_keyword?: string | null
-          required_sections?: Json | null
-          search_intent?: string | null
-          secondary_keywords?: Json | null
-          slug?: string | null
-          status?: string | null
-          summary?: string | null
-          target_audience?: string | null
-          target_word_count?: number | null
-          title: string
-          tone_and_style?: string | null
-          updated_at?: string | null
-        }
-        Update: {
-          approved_at?: string | null
-          approved_by?: string | null
-          campaign_id?: number | null
-          competitor_examples?: Json | null
-          content_goals?: string | null
-          content_type_id?: number | null
-          created_at?: string | null
-          created_by?: string | null
-          external_references?: Json | null
-          id?: never
-          idea_id?: number | null
-          internal_links?: Json | null
-          metadata?: Json | null
-          notes?: string | null
-          outline?: Json | null
-          primary_keyword?: string | null
-          required_sections?: Json | null
-          search_intent?: string | null
-          secondary_keywords?: Json | null
-          slug?: string | null
-          status?: string | null
-          summary?: string | null
-          target_audience?: string | null
-          target_word_count?: number | null
-          title?: string
-          tone_and_style?: string | null
-          updated_at?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cp_content_briefs_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "cp_campaign_summary"
-            referencedColumns: ["campaign_id"]
-          },
-          {
-            foreignKeyName: "cp_content_briefs_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "cp_campaigns"
+            referencedRelation: "cp_content"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "cp_content_briefs_content_type_id_fkey"
-            columns: ["content_type_id"]
+            foreignKeyName: "cp_content_attachments_uploaded_by_fkey"
+            columns: ["uploaded_by"]
             isOneToOne: false
-            referencedRelation: "cp_content_types"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cp_content_briefs_idea_id_fkey"
-            columns: ["idea_id"]
-            isOneToOne: false
-            referencedRelation: "cp_content_ideas"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      cp_content_ideas: {
-        Row: {
-          campaign_id: number | null
-          content_type_id: number | null
-          created_at: string | null
-          description: string | null
-          estimated_effort: string | null
-          id: number
-          metadata: Json | null
-          notes: string | null
-          potential_keywords: Json | null
-          priority: string | null
-          rejection_reason: string | null
-          reviewed_at: string | null
-          reviewed_by: string | null
-          source: string | null
-          status: string | null
-          submitted_by: string | null
-          target_audience: string | null
-          title: string
-          updated_at: string | null
-          vote_count: number | null
-          votes: Json | null
-        }
-        Insert: {
-          campaign_id?: number | null
-          content_type_id?: number | null
-          created_at?: string | null
-          description?: string | null
-          estimated_effort?: string | null
-          id?: never
-          metadata?: Json | null
-          notes?: string | null
-          potential_keywords?: Json | null
-          priority?: string | null
-          rejection_reason?: string | null
-          reviewed_at?: string | null
-          reviewed_by?: string | null
-          source?: string | null
-          status?: string | null
-          submitted_by?: string | null
-          target_audience?: string | null
-          title: string
-          updated_at?: string | null
-          vote_count?: number | null
-          votes?: Json | null
-        }
-        Update: {
-          campaign_id?: number | null
-          content_type_id?: number | null
-          created_at?: string | null
-          description?: string | null
-          estimated_effort?: string | null
-          id?: never
-          metadata?: Json | null
-          notes?: string | null
-          potential_keywords?: Json | null
-          priority?: string | null
-          rejection_reason?: string | null
-          reviewed_at?: string | null
-          reviewed_by?: string | null
-          source?: string | null
-          status?: string | null
-          submitted_by?: string | null
-          target_audience?: string | null
-          title?: string
-          updated_at?: string | null
-          vote_count?: number | null
-          votes?: Json | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cp_content_ideas_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "cp_campaign_summary"
-            referencedColumns: ["campaign_id"]
-          },
-          {
-            foreignKeyName: "cp_content_ideas_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "cp_campaigns"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cp_content_ideas_content_type_id_fkey"
-            columns: ["content_type_id"]
-            isOneToOne: false
-            referencedRelation: "cp_content_types"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      cp_content_items: {
-        Row: {
-          assigned_author_id: number | null
-          assigned_editor_id: number | null
-          brief_id: number | null
-          campaign_id: number | null
-          content_type_id: number | null
-          created_at: string | null
-          draft_story_id: number | null
-          due_date: string | null
-          id: number
-          metadata: Json | null
-          notes: string | null
-          priority: string | null
-          publish_date: string | null
-          release_id: number | null
-          scheduled_date: string | null
-          scheduled_time: string | null
-          seo_metadata: Json | null
-          slug: string | null
-          social_metadata: Json | null
-          story_id: number | null
-          storyblok_url: string | null
-          title: string
-          updated_at: string | null
-          workflow_status_id: number | null
-        }
-        Insert: {
-          assigned_author_id?: number | null
-          assigned_editor_id?: number | null
-          brief_id?: number | null
-          campaign_id?: number | null
-          content_type_id?: number | null
-          created_at?: string | null
-          draft_story_id?: number | null
-          due_date?: string | null
-          id?: never
-          metadata?: Json | null
-          notes?: string | null
-          priority?: string | null
-          publish_date?: string | null
-          release_id?: number | null
-          scheduled_date?: string | null
-          scheduled_time?: string | null
-          seo_metadata?: Json | null
-          slug?: string | null
-          social_metadata?: Json | null
-          story_id?: number | null
-          storyblok_url?: string | null
-          title: string
-          updated_at?: string | null
-          workflow_status_id?: number | null
-        }
-        Update: {
-          assigned_author_id?: number | null
-          assigned_editor_id?: number | null
-          brief_id?: number | null
-          campaign_id?: number | null
-          content_type_id?: number | null
-          created_at?: string | null
-          draft_story_id?: number | null
-          due_date?: string | null
-          id?: never
-          metadata?: Json | null
-          notes?: string | null
-          priority?: string | null
-          publish_date?: string | null
-          release_id?: number | null
-          scheduled_date?: string | null
-          scheduled_time?: string | null
-          seo_metadata?: Json | null
-          slug?: string | null
-          social_metadata?: Json | null
-          story_id?: number | null
-          storyblok_url?: string | null
-          title?: string
-          updated_at?: string | null
-          workflow_status_id?: number | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cp_content_items_assigned_author_id_fkey"
-            columns: ["assigned_author_id"]
-            isOneToOne: false
-            referencedRelation: "authors"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_assigned_author_id_fkey"
-            columns: ["assigned_author_id"]
-            isOneToOne: false
-            referencedRelation: "cp_author_workload"
-            referencedColumns: ["author_id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_assigned_editor_id_fkey"
-            columns: ["assigned_editor_id"]
-            isOneToOne: false
-            referencedRelation: "authors"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_assigned_editor_id_fkey"
-            columns: ["assigned_editor_id"]
-            isOneToOne: false
-            referencedRelation: "cp_author_workload"
-            referencedColumns: ["author_id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_brief_id_fkey"
-            columns: ["brief_id"]
-            isOneToOne: false
-            referencedRelation: "cp_content_briefs"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "cp_campaign_summary"
-            referencedColumns: ["campaign_id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_campaign_id_fkey"
-            columns: ["campaign_id"]
-            isOneToOne: false
-            referencedRelation: "cp_campaigns"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_content_type_id_fkey"
-            columns: ["content_type_id"]
-            isOneToOne: false
-            referencedRelation: "cp_content_types"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_draft_story_id_fkey"
-            columns: ["draft_story_id"]
-            isOneToOne: false
-            referencedRelation: "draft_stories"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_release_id_fkey"
-            columns: ["release_id"]
-            isOneToOne: false
-            referencedRelation: "releases"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_story_id_fkey"
-            columns: ["story_id"]
-            isOneToOne: false
-            referencedRelation: "stories"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_workflow_status_id_fkey"
-            columns: ["workflow_status_id"]
-            isOneToOne: false
-            referencedRelation: "cp_content_pipeline"
-            referencedColumns: ["status_id"]
-          },
-          {
-            foreignKeyName: "cp_content_items_workflow_status_id_fkey"
-            columns: ["workflow_status_id"]
-            isOneToOne: false
-            referencedRelation: "cp_workflow_statuses"
+            referencedRelation: "registered_users"
             referencedColumns: ["id"]
           },
         ]
       }
       cp_content_links: {
         Row: {
-          content_item_id: number
+          content_id: number | null
           created_at: string | null
           created_by: string | null
           description: string | null
@@ -1675,7 +1679,7 @@ export type Database = {
           url: string
         }
         Insert: {
-          content_item_id: number
+          content_id?: number | null
           created_at?: string | null
           created_by?: string | null
           description?: string | null
@@ -1686,7 +1690,7 @@ export type Database = {
           url: string
         }
         Update: {
-          content_item_id?: number
+          content_id?: number | null
           created_at?: string | null
           created_by?: string | null
           description?: string | null
@@ -1698,39 +1702,46 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cp_content_links_content_item_id_fkey"
-            columns: ["content_item_id"]
+            foreignKeyName: "cp_content_links_content_id_fkey"
+            columns: ["content_id"]
             isOneToOne: false
-            referencedRelation: "cp_content_items"
+            referencedRelation: "cp_content"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_content_links_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
             referencedColumns: ["id"]
           },
         ]
       }
       cp_content_tags: {
         Row: {
-          content_item_id: number
+          content_id: number
           created_at: string | null
           id: number
           tag_id: number
         }
         Insert: {
-          content_item_id: number
+          content_id: number
           created_at?: string | null
           id?: never
           tag_id: number
         }
         Update: {
-          content_item_id?: number
+          content_id?: number
           created_at?: string | null
           id?: never
           tag_id?: number
         }
         Relationships: [
           {
-            foreignKeyName: "cp_content_tags_content_item_id_fkey"
-            columns: ["content_item_id"]
+            foreignKeyName: "cp_content_tags_content_id_fkey"
+            columns: ["content_id"]
             isOneToOne: false
-            referencedRelation: "cp_content_items"
+            referencedRelation: "cp_content"
             referencedColumns: ["id"]
           },
           {
@@ -1893,7 +1904,7 @@ export type Database = {
       }
       cp_workflow_transitions: {
         Row: {
-          content_item_id: number
+          content_id: number | null
           created_at: string | null
           from_status_id: number | null
           id: number
@@ -1903,7 +1914,7 @@ export type Database = {
           transitioned_by: string | null
         }
         Insert: {
-          content_item_id: number
+          content_id?: number | null
           created_at?: string | null
           from_status_id?: number | null
           id?: never
@@ -1913,7 +1924,7 @@ export type Database = {
           transitioned_by?: string | null
         }
         Update: {
-          content_item_id?: number
+          content_id?: number | null
           created_at?: string | null
           from_status_id?: number | null
           id?: never
@@ -1924,10 +1935,10 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "cp_workflow_transitions_content_item_id_fkey"
-            columns: ["content_item_id"]
+            foreignKeyName: "cp_workflow_transitions_content_id_fkey"
+            columns: ["content_id"]
             isOneToOne: false
-            referencedRelation: "cp_content_items"
+            referencedRelation: "cp_content"
             referencedColumns: ["id"]
           },
           {
@@ -1956,6 +1967,13 @@ export type Database = {
             columns: ["to_status_id"]
             isOneToOne: false
             referencedRelation: "cp_workflow_statuses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cp_workflow_transitions_transitioned_by_fkey"
+            columns: ["transitioned_by"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
             referencedColumns: ["id"]
           },
         ]
@@ -2756,6 +2774,108 @@ export type Database = {
           },
         ]
       }
+      notification_preferences: {
+        Row: {
+          browser_enabled: boolean | null
+          created_at: string | null
+          email_enabled: boolean | null
+          event_preferences: Json | null
+          notifications_enabled: boolean | null
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          browser_enabled?: boolean | null
+          created_at?: string | null
+          email_enabled?: boolean | null
+          event_preferences?: Json | null
+          notifications_enabled?: boolean | null
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          browser_enabled?: boolean | null
+          created_at?: string | null
+          email_enabled?: boolean | null
+          event_preferences?: Json | null
+          notifications_enabled?: boolean | null
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "notification_preferences_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      notifications: {
+        Row: {
+          actor_id: string | null
+          body: string | null
+          comment_id: number | null
+          created_at: string | null
+          entity_id: number | null
+          entity_type: string | null
+          id: number
+          notification_type: string
+          read_at: string | null
+          recipient_id: string
+          title: string
+        }
+        Insert: {
+          actor_id?: string | null
+          body?: string | null
+          comment_id?: number | null
+          created_at?: string | null
+          entity_id?: number | null
+          entity_type?: string | null
+          id?: never
+          notification_type: string
+          read_at?: string | null
+          recipient_id: string
+          title: string
+        }
+        Update: {
+          actor_id?: string | null
+          body?: string | null
+          comment_id?: number | null
+          created_at?: string | null
+          entity_id?: number | null
+          entity_type?: string | null
+          id?: never
+          notification_type?: string
+          read_at?: string | null
+          recipient_id?: string
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "notifications_actor_id_fkey"
+            columns: ["actor_id"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "notifications_comment_id_fkey"
+            columns: ["comment_id"]
+            isOneToOne: false
+            referencedRelation: "cp_comments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "notifications_recipient_id_fkey"
+            columns: ["recipient_id"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       offer_coupons: {
         Row: {
           coupon_id: number
@@ -3025,7 +3145,15 @@ export type Database = {
           updated_at?: string | null
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "product_segments_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       products: {
         Row: {
@@ -3191,6 +3319,41 @@ export type Database = {
           uuid?: string | null
         }
         Relationships: []
+      }
+      push_subscriptions: {
+        Row: {
+          auth_key: string
+          created_at: string | null
+          endpoint: string
+          id: number
+          p256dh_key: string
+          user_id: string
+        }
+        Insert: {
+          auth_key: string
+          created_at?: string | null
+          endpoint: string
+          id?: never
+          p256dh_key: string
+          user_id: string
+        }
+        Update: {
+          auth_key?: string
+          created_at?: string | null
+          endpoint?: string
+          id?: never
+          p256dh_key?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "push_subscriptions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       redirects: {
         Row: {
@@ -3862,6 +4025,38 @@ export type Database = {
         }
         Relationships: []
       }
+      user_profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          display_name: string | null
+          id: string
+          updated_at: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          id: string
+          updated_at?: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "user_profiles_id_fkey"
+            columns: ["id"]
+            isOneToOne: true
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       user_roles: {
         Row: {
           created_at: string | null
@@ -3884,36 +4079,35 @@ export type Database = {
           updated_at?: string | null
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "user_roles_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "registered_users"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {
       cp_author_workload: {
         Row: {
           active_assignments: number | null
-          as_author: number | null
-          as_editor: number | null
-          as_reviewer: number | null
+          active_content_titles: string[] | null
           author_id: number | null
           author_name: string | null
           author_slug: string | null
           avatar_url: string | null
-          completed_this_month: number | null
-          due_this_week: number | null
-          items_approved: number | null
-          items_in_draft: number | null
-          items_in_review: number | null
-          items_scheduled: number | null
-          next_deadline: string | null
-          overdue_items: number | null
+          completed_assignments: number | null
+          latest_assignment: string | null
+          total_assignments: number | null
         }
         Relationships: []
       }
       cp_calendar_view: {
         Row: {
           all_day: boolean | null
-          assigned_author_name: string | null
-          assigned_editor_name: string | null
           calendar_event_id: number | null
           campaign_id: number | null
           campaign_name: string | null
@@ -3973,6 +4167,15 @@ export type Database = {
         }
         Relationships: []
       }
+      registered_users: {
+        Row: {
+          avatar_url: string | null
+          display_name: string | null
+          email: string | null
+          id: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       cp_user_has_any_role: {
@@ -3984,6 +4187,13 @@ export type Database = {
       cp_user_is_editor_or_above: { Args: never; Returns: boolean }
       cp_user_is_team_member: { Args: never; Returns: boolean }
       exec_sql: { Args: { sql: string }; Returns: undefined }
+      get_auth_users: {
+        Args: never
+        Returns: {
+          email: string
+          id: string
+        }[]
+      }
       is_admin: { Args: { check_user_id?: string }; Returns: boolean }
     }
     Enums: {

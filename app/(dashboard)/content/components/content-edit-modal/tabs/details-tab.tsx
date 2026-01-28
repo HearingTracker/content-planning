@@ -1,8 +1,11 @@
 "use client";
 
+import { useState } from "react";
+import { ExternalLink, X, Link as LinkIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -28,6 +31,24 @@ export function DetailsTab({
   localCampaigns,
   onCreateCampaign,
 }: DetailsTabProps) {
+  const [isEditingStoryblokUrl, setIsEditingStoryblokUrl] = useState(false);
+  const [tempStoryblokUrl, setTempStoryblokUrl] = useState("");
+
+  const handleStartEditingUrl = () => {
+    setTempStoryblokUrl(formData.storyblok_url || "");
+    setIsEditingStoryblokUrl(true);
+  };
+
+  const handleSaveUrl = () => {
+    onChange({ storyblok_url: tempStoryblokUrl || null });
+    setIsEditingStoryblokUrl(false);
+  };
+
+  const handleCancelEditUrl = () => {
+    setTempStoryblokUrl("");
+    setIsEditingStoryblokUrl(false);
+  };
+
   return (
     <div className="space-y-4 p-1">
       {/* Title */}
@@ -155,15 +176,85 @@ export function DetailsTab({
       {/* Storyblok URL */}
       <div className="grid gap-2">
         <Label htmlFor="storyblok_url">Storyblok URL</Label>
-        <Input
-          id="storyblok_url"
-          type="url"
-          value={formData.storyblok_url || ""}
-          onChange={(e) =>
-            onChange({ storyblok_url: e.target.value || null })
-          }
-          placeholder="https://app.storyblok.com/..."
-        />
+        {isEditingStoryblokUrl ? (
+          <div className="p-3 rounded-lg border bg-background space-y-2">
+            <Input
+              id="storyblok_url"
+              type="url"
+              value={tempStoryblokUrl}
+              onChange={(e) => setTempStoryblokUrl(e.target.value)}
+              placeholder="https://app.storyblok.com/..."
+              className="text-sm"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveUrl();
+                if (e.key === "Escape") handleCancelEditUrl();
+              }}
+            />
+            <div className="flex gap-2 justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleCancelEditUrl}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleSaveUrl}
+              >
+                Save
+              </Button>
+            </div>
+          </div>
+        ) : formData.storyblok_url ? (
+          <div className="flex items-start gap-2 p-2 rounded-lg bg-muted/50 group">
+            <LinkIcon className="h-4 w-4 mt-1 text-muted-foreground flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <a
+                href={formData.storyblok_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-medium hover:underline flex items-center gap-1"
+              >
+                {formData.storyblok_url}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={handleStartEditingUrl}
+              >
+                Edit
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0"
+                onClick={() => onChange({ storyblok_url: null })}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Input
+            id="storyblok_url"
+            type="url"
+            value=""
+            onChange={(e) =>
+              onChange({ storyblok_url: e.target.value || null })
+            }
+            placeholder="https://app.storyblok.com/..."
+          />
+        )}
       </div>
     </div>
   );
