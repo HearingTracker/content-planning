@@ -9,6 +9,7 @@ import { UserAvatar } from "@/components/shared/user-avatar";
 import { cn } from "@/lib/utils";
 import type { Comment, CommentAttachment } from "./types";
 import { updateComment, deleteComment, getAttachmentUrl } from "../actions";
+import { useCurrentUserRole } from "@/hooks/queries/use-current-user";
 
 interface CommentMessageProps {
   comment: Comment;
@@ -71,10 +72,15 @@ export function CommentMessage({
   onUpdate,
 }: CommentMessageProps) {
   const [isEditing, setIsEditing] = useState(false);
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const [editedBody, setEditedBody] = useState(comment.body);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const isOwner = currentUserId === comment.author_id;
+  const { data: role } = useCurrentUserRole();
+  const isAdmin = role === "admin";
+  const canDelete = isOwner || isAdmin;
+  const hasActions = isOwner || canDelete;
   const displayName = comment.author_display_name || comment.author_email?.split("@")[0] || "Unknown";
 
   const handleSaveEdit = useCallback(async () => {
@@ -92,13 +98,14 @@ export function CommentMessage({
     setIsEditing(false);
   }, [comment.id, comment.body, editedBody, onUpdate]);
 
-  const handleDelete = useCallback(async () => {
-    if (!confirm("Delete this comment?")) return;
-
+  const handleConfirmDelete = useCallback(async () => {
+    setIsSubmitting(true);
     const result = await deleteComment(comment.id);
     if (result.success) {
       onDelete(comment.id);
     }
+    setIsSubmitting(false);
+    setIsConfirmingDelete(false);
   }, [comment.id, onDelete]);
 
   const handleDownloadAttachment = useCallback(
@@ -116,7 +123,7 @@ export function CommentMessage({
       <UserAvatar name={displayName} avatarUrl={comment.author_avatar_url || undefined} size="sm" />
 
       <div className="flex-1 min-w-0">
-        {/* Header */}
+        {/* Header + inline action icons */}
         <div className="flex items-center gap-2">
           <span className="font-medium text-sm">{displayName}</span>
           <span className="text-xs text-muted-foreground">
@@ -127,10 +134,61 @@ export function CommentMessage({
           {comment.updated_at !== comment.created_at && (
             <span className="text-xs text-muted-foreground">(edited)</span>
           )}
+
+          {/* Hover actions — icon-only, tucked into the header row */}
+          {hasActions && !isEditing && !isConfirmingDelete && (
+            <div className="ml-auto flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              {isOwner && (
+                <button
+                  type="button"
+                  className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  onClick={() => setIsEditing(true)}
+                  title="Edit comment"
+                >
+                  <Edit2 className="h-3 w-3" />
+                </button>
+              )}
+              {canDelete && (
+                <button
+                  type="button"
+                  className="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                  onClick={() => setIsConfirmingDelete(true)}
+                  title="Delete comment"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Body */}
-        {isEditing ? (
+        {/* Inline delete confirmation */}
+        {isConfirmingDelete ? (
+          <div className="mt-1.5 flex items-center gap-2 rounded-md bg-destructive/5 border border-destructive/20 px-3 py-2">
+            <Trash2 className="h-3.5 w-3.5 text-destructive shrink-0" />
+            <span className="text-sm text-destructive/90">Delete this comment?</span>
+            <div className="ml-auto flex gap-1.5">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-xs"
+                onClick={() => setIsConfirmingDelete(false)}
+                disabled={isSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-6 px-2 text-xs"
+                onClick={handleConfirmDelete}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? "Deleting..." : "Delete"}
+              </Button>
+            </div>
+          </div>
+        ) : isEditing ? (
           <div className="mt-1 space-y-2">
             <Textarea
               value={editedBody}
@@ -163,7 +221,7 @@ export function CommentMessage({
         )}
 
         {/* Attachments */}
-        {comment.attachments && comment.attachments.length > 0 && (
+        {comment.attachments && comment.attachments.length > 0 && !isConfirmingDelete && (
           <div className="mt-2 flex flex-wrap gap-2">
             {comment.attachments.map((attachment) => {
               const FileIcon = getFileIcon(attachment.mime_type);
@@ -186,30 +244,6 @@ export function CommentMessage({
                 </button>
               );
             })}
-          </div>
-        )}
-
-        {/* Actions */}
-        {isOwner && !isEditing && (
-          <div className="mt-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 px-2 text-xs"
-              onClick={() => setIsEditing(true)}
-            >
-              <Edit2 className="h-3 w-3" />
-              Edit
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 px-2 text-xs text-destructive hover:text-destructive"
-              onClick={handleDelete}
-            >
-              <Trash2 className="h-3 w-3" />
-              Delete
-            </Button>
           </div>
         )}
       </div>

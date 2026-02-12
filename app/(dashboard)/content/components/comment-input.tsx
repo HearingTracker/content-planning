@@ -146,8 +146,8 @@ export function CommentInput({
         <Button
           onClick={handleSubmit}
           disabled={isSubmitting || (!body.trim() && files.length === 0)}
-          size="sm"
-          className="h-10"
+          size="icon"
+          className="h-9 w-9 shrink-0 self-start"
         >
           <Send className="h-4 w-4" />
         </Button>

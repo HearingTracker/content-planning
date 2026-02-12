@@ -29,6 +29,7 @@ import {
   useReorderContentItems,
   useCalendarItems,
   useCanDelete,
+  useCurrentUser,
 } from "@/hooks/queries";
 import { promoteContent } from "../strategy/actions";
 import type {
@@ -68,6 +69,7 @@ export default function ContentPage() {
 
   const view = urlState.view as ContentView;
   const canDelete = useCanDelete();
+  const { data: currentUser } = useCurrentUser();
 
   // Calendar items - only fetch when in calendar view
   const today = new Date();
@@ -451,6 +453,7 @@ export default function ContentPage() {
         item={editingItem}
         filterOptions={filterOptions}
         onSave={handleModalSave}
+        currentUserId={currentUser?.id}
         highlightCommentId={urlState.comment}
         initialData={initialData}
       />
