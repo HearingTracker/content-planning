@@ -105,6 +105,25 @@ function EditorWrapperComponent({
     updateData();
   }, [data, isReady]);
 
+  // Handle link clicks in the editor - open in new tab
+  useEffect(() => {
+    const holder = holderRef.current;
+    if (!holder) return;
+
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const anchor = target.closest("a");
+      if (anchor && anchor.href) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.open(anchor.href, "_blank", "noopener,noreferrer");
+      }
+    };
+
+    holder.addEventListener("click", handleClick);
+    return () => holder.removeEventListener("click", handleClick);
+  }, []);
+
   return (
     <div className="editor-wrapper min-h-[300px] border rounded-md bg-background">
       <div

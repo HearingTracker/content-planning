@@ -194,6 +194,11 @@
   @apply leading-relaxed;
 }
 
+.ce-paragraph a,
+.ce-block a {
+  @apply text-primary underline cursor-pointer hover:text-primary/80;
+}
+
 .cdx-list {
   @apply pl-6;
 }
