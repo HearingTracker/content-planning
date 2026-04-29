@@ -244,7 +244,7 @@ export function NotificationSettingsForm({
               <div className="space-y-0.5">
                 <Label htmlFor="event-comment">Comments on Assigned Content</Label>
                 <p className="text-sm text-muted-foreground">
-                  When someone comments on content you're assigned to
+                  When someone comments on content you&rsquo;re assigned to
                 </p>
               </div>
             </div>
@@ -280,7 +280,7 @@ export function NotificationSettingsForm({
               <div className="space-y-0.5">
                 <Label htmlFor="event-assignment">Assignments</Label>
                 <p className="text-sm text-muted-foreground">
-                  When you're assigned to content
+                  When you&rsquo;re assigned to content
                 </p>
               </div>
             </div>

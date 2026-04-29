@@ -263,7 +263,7 @@ export function ContentKanban({
         .sort((a, b) => a.display_order - b.display_order);
 
       const oldIndex = allColumnItems.findIndex((i) => i.id === activeItemId);
-      let newIndex = overItemId
+      const newIndex = overItemId
         ? allColumnItems.findIndex((i) => i.id === overItemId)
         : allColumnItems.length - 1;
 

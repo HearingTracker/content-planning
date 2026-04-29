@@ -379,7 +379,7 @@ export async function voteOnIdea(
   const currentVotes = (idea.votes || []) as { user_id: string; vote: number; timestamp: string }[];
   const existingVoteIndex = currentVotes.findIndex((v) => v.user_id === user.id);
 
-  let newVotes = [...currentVotes];
+  const newVotes = [...currentVotes];
   let voteDelta: number = vote;
 
   if (existingVoteIndex >= 0) {

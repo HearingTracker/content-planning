@@ -92,7 +92,7 @@ export function parseKeywordWithVolume(text: string): ParsedKeyword {
 
   if (volumeMatch) {
     const keyword = text.replace(volumeMatch[0], "").trim();
-    let volumeStr = volumeMatch[1].replace(/,/g, "");
+    const volumeStr = volumeMatch[1].replace(/,/g, "");
 
     let volume: number;
     if (volumeStr.toLowerCase().endsWith("k")) {

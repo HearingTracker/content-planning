@@ -64,7 +64,7 @@ export function QuickEditDates({
           <DialogHeader>
             <DialogTitle>Edit Dates</DialogTitle>
             <DialogDescription>
-              Update dates for "{item.title}"
+              Update dates for &ldquo;{item.title}&rdquo;
             </DialogDescription>
           </DialogHeader>
 

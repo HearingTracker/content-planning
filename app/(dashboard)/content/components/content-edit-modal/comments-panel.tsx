@@ -27,6 +27,7 @@ export function CommentsPanel({
   highlightCommentId,
 }: CommentsPanelProps) {
   const [highlightedId, setHighlightedId] = useState<number | null>(null);
+  const [prevHighlightKey, setPrevHighlightKey] = useState<string | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
@@ -35,21 +36,30 @@ export function CommentsPanel({
   const deleteCommentMutation = useDeleteComment();
   const updateCommentMutation = useUpdateComment();
 
-  // Scroll to and highlight comment when highlightCommentId changes
+  // Reset highlighted id when highlightCommentId changes (and comments are loaded)
+  const highlightKey =
+    highlightCommentId && comments.length > 0
+      ? `${highlightCommentId}:${comments.length}`
+      : null;
+  if (highlightKey !== prevHighlightKey) {
+    setPrevHighlightKey(highlightKey);
+    setHighlightedId(highlightCommentId ?? null);
+  }
+
+  // Side-effects for the active highlight: scroll into view and clear after 3s
   useEffect(() => {
-    if (highlightCommentId && comments.length > 0) {
-      setHighlightedId(highlightCommentId);
-      // Scroll to the comment
-      setTimeout(() => {
-        const commentElement = document.getElementById(`comment-${highlightCommentId}`);
-        if (commentElement) {
-          commentElement.scrollIntoView({ behavior: "smooth", block: "center" });
-        }
-      }, 100);
-      // Remove highlight after 3 seconds
-      const timer = setTimeout(() => setHighlightedId(null), 3000);
-      return () => clearTimeout(timer);
-    }
+    if (!highlightCommentId || comments.length === 0) return;
+    const scrollTimer = setTimeout(() => {
+      const commentElement = document.getElementById(`comment-${highlightCommentId}`);
+      if (commentElement) {
+        commentElement.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 100);
+    const clearTimer = setTimeout(() => setHighlightedId(null), 3000);
+    return () => {
+      clearTimeout(scrollTimer);
+      clearTimeout(clearTimer);
+    };
   }, [highlightCommentId, comments.length]);
 
   const handleCommentAdded = useCallback((comment: Comment) => {

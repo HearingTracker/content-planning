@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Paperclip, Link as LinkIcon } from "lucide-react";
 import {
   Dialog,
@@ -27,15 +27,21 @@ export function AttachmentsLinksDialog({
   item,
   onSuccess,
 }: AttachmentsLinksDialogProps) {
-  const [attachments, setAttachments] = useState<ContentAttachment[]>([]);
-  const [links, setLinks] = useState<ContentLink[]>([]);
+  const [attachments, setAttachments] = useState<ContentAttachment[]>(
+    item?.attachments || []
+  );
+  const [links, setLinks] = useState<ContentLink[]>(item?.links || []);
+  const [prevItemId, setPrevItemId] = useState<number | null>(item?.id ?? null);
+  const [prevOpen, setPrevOpen] = useState(open);
 
-  useEffect(() => {
-    if (open && item) {
-      setAttachments(item.attachments || []);
-      setLinks(item.links || []);
-    }
-  }, [open, item]);
+  if (open && item && (prevOpen !== open || prevItemId !== item.id)) {
+    setPrevOpen(open);
+    setPrevItemId(item.id);
+    setAttachments(item.attachments || []);
+    setLinks(item.links || []);
+  } else if (!open && prevOpen) {
+    setPrevOpen(false);
+  }
 
   const handleAttachmentsChange = (newAttachments: ContentAttachment[]) => {
     setAttachments(newAttachments);

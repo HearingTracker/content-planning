@@ -1,4 +1,4 @@
-.PHONY: help run-dev run-dev-clean install build db-pull-data db-reset db-push db-status
+.PHONY: help run-dev run-dev-clean install build check db-pull-data db-reset db-push db-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -17,6 +17,13 @@ install: ## Install dependencies
 
 build: ## Build for production
 	pnpm build
+
+# Code Quality
+check: ## Run linter + TypeScript check
+	@pnpm lint --quiet || true
+	@echo "Running tsc..."
+	@pnpm exec tsc --noEmit
+	@echo "tsc passed"
 
 # Database commands
 DB_URL := postgresql://postgres:postgres@127.0.0.1:54354/postgres

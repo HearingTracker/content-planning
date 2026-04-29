@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useCallback, useRef } from "react";
 import { Search, MessageSquare } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Sheet,
   SheetContent,
@@ -11,8 +12,13 @@ import {
 } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { queryKeys } from "@/lib/query-keys";
 import type { ContentItem, Comment, User } from "./types";
-import { getComments } from "../actions";
+import {
+  useComments,
+  useDeleteComment,
+  useUpdateComment,
+} from "@/hooks/queries";
 import { CommentMessage } from "./comment-message";
 import { CommentInput } from "./comment-input";
 
@@ -31,63 +37,53 @@ export function CommentsDrawer({
   users,
   currentUserId,
 }: CommentsDrawerProps) {
-  const [comments, setComments] = useState<Comment[]>([]);
-  const [search, setSearch] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
+  const contentItemId = open ? item.id : null;
 
-  // Load comments when drawer opens
-  useEffect(() => {
-    if (open) {
-      loadComments();
-    }
-  }, [open, item.id]);
+  const {
+    data: comments = [],
+    isLoading,
+    search,
+    setSearch,
+  } = useComments(contentItemId);
 
-  // Search with debounce
-  useEffect(() => {
-    if (!open) return;
+  const deleteCommentMutation = useDeleteComment();
+  const updateCommentMutation = useUpdateComment();
 
-    const timer = setTimeout(() => {
-      loadComments(search);
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [search, open]);
-
-  const loadComments = useCallback(
-    async (searchQuery?: string) => {
-      setIsLoading(true);
-      const data = await getComments(item.id, searchQuery);
-      setComments(data);
-      setIsLoading(false);
+  const handleCommentAdded = useCallback(
+    (comment: Comment) => {
+      queryClient.setQueryData<Comment[]>(
+        queryKeys.comments.list(item.id, undefined),
+        (old) => (old ? [...old, comment] : [comment])
+      );
+      queryClient.invalidateQueries({ queryKey: queryKeys.comments.all });
+      // Scroll to bottom
+      setTimeout(() => {
+        const scrollArea = scrollAreaRef.current?.querySelector(
+          "[data-radix-scroll-area-viewport]"
+        );
+        if (scrollArea) {
+          scrollArea.scrollTop = scrollArea.scrollHeight;
+        }
+      }, 100);
     },
-    [item.id]
+    [item.id, queryClient]
   );
 
-  const handleCommentAdded = useCallback((comment: Comment) => {
-    setComments((prev) => [...prev, comment]);
-    // Scroll to bottom
-    setTimeout(() => {
-      const scrollArea = scrollAreaRef.current?.querySelector(
-        "[data-radix-scroll-area-viewport]"
-      );
-      if (scrollArea) {
-        scrollArea.scrollTop = scrollArea.scrollHeight;
-      }
-    }, 100);
-  }, []);
+  const handleCommentDeleted = useCallback(
+    async (commentId: number) => {
+      await deleteCommentMutation.mutateAsync(commentId);
+    },
+    [deleteCommentMutation]
+  );
 
-  const handleCommentDeleted = useCallback((commentId: number) => {
-    setComments((prev) => prev.filter((c) => c.id !== commentId));
-  }, []);
-
-  const handleCommentUpdated = useCallback((commentId: number, body: string) => {
-    setComments((prev) =>
-      prev.map((c) =>
-        c.id === commentId ? { ...c, body, updated_at: new Date().toISOString() } : c
-      )
-    );
-  }, []);
+  const handleCommentUpdated = useCallback(
+    async (commentId: number, body: string) => {
+      await updateCommentMutation.mutateAsync({ commentId, body });
+    },
+    [updateCommentMutation]
+  );
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>

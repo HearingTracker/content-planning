@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useId } from "react";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -16,7 +17,6 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Check, ChevronsUpDown, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -53,21 +53,33 @@ export function ContentFiltersPanel({
     filters.assignees.length > 0 ||
     filters.priorities.length > 0;
 
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
-        {/* Search */}
-        <div className="sm:col-span-2 md:col-span-1 lg:col-span-1">
-          <Input
-            placeholder="Search content..."
-            value={filters.search}
-            onChange={(e) => updateFilter("search", e.target.value)}
-          />
-        </div>
+  const searchId = useId();
 
-        {/* Status Filter */}
+  return (
+    <div className="grid auto-rows-min gap-6">
+      <FilterRow
+        label="Search"
+        htmlFor={searchId}
+        onClear={filters.search ? () => updateFilter("search", "") : undefined}
+      >
+        <Input
+          id={searchId}
+          placeholder="Search content..."
+          value={filters.search}
+          onChange={(e) => updateFilter("search", e.target.value)}
+        />
+      </FilterRow>
+
+      <FilterRow
+        label="Status"
+        onClear={
+          filters.statuses.length > 0
+            ? () => updateFilter("statuses", [])
+            : undefined
+        }
+      >
         <MultiSelectFilter
-          placeholder="Status"
+          placeholder="All statuses"
           options={filterOptions.statuses.map((s) => ({
             value: s.slug,
             label: s.name,
@@ -75,10 +87,18 @@ export function ContentFiltersPanel({
           selected={filters.statuses}
           onSelectionChange={(value) => updateFilter("statuses", value)}
         />
+      </FilterRow>
 
-        {/* Content Type Filter */}
+      <FilterRow
+        label="Type"
+        onClear={
+          filters.types.length > 0
+            ? () => updateFilter("types", [])
+            : undefined
+        }
+      >
         <MultiSelectFilter
-          placeholder="Type"
+          placeholder="All types"
           options={filterOptions.types.map((t) => ({
             value: t.slug,
             label: t.name,
@@ -86,10 +106,18 @@ export function ContentFiltersPanel({
           selected={filters.types}
           onSelectionChange={(value) => updateFilter("types", value)}
         />
+      </FilterRow>
 
-        {/* Campaign Filter */}
+      <FilterRow
+        label="Campaign"
+        onClear={
+          filters.campaigns.length > 0
+            ? () => updateFilter("campaigns", [])
+            : undefined
+        }
+      >
         <MultiSelectFilter
-          placeholder="Campaign"
+          placeholder="All campaigns"
           options={filterOptions.campaigns.map((c) => ({
             value: String(c.id),
             label: c.name,
@@ -102,10 +130,18 @@ export function ContentFiltersPanel({
             )
           }
         />
+      </FilterRow>
 
-        {/* Assignee Filter */}
+      <FilterRow
+        label="Assignee"
+        onClear={
+          filters.assignees.length > 0
+            ? () => updateFilter("assignees", [])
+            : undefined
+        }
+      >
         <MultiSelectFilter
-          placeholder="Assignee"
+          placeholder="Anyone"
           options={filterOptions.users.map((u) => ({
             value: u.id,
             label: u.display_name || u.email,
@@ -113,10 +149,18 @@ export function ContentFiltersPanel({
           selected={filters.assignees}
           onSelectionChange={(value) => updateFilter("assignees", value)}
         />
+      </FilterRow>
 
-        {/* Priority Filter */}
+      <FilterRow
+        label="Priority"
+        onClear={
+          filters.priorities.length > 0
+            ? () => updateFilter("priorities", [])
+            : undefined
+        }
+      >
         <MultiSelectFilter
-          placeholder="Priority"
+          placeholder="Any priority"
           options={[
             { value: "urgent", label: "Urgent" },
             { value: "high", label: "High" },
@@ -128,17 +172,46 @@ export function ContentFiltersPanel({
             updateFilter("priorities", value as ContentFilters["priorities"])
           }
         />
-      </div>
+      </FilterRow>
 
-      {/* Clear Filters */}
       {hasActiveFilters && (
-        <div className="flex justify-end">
-          <Button variant="ghost" size="sm" onClick={clearFilters}>
-            <X className="mr-1 h-3 w-3" />
-            Clear filters
-          </Button>
-        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={clearFilters}
+          className="justify-self-end"
+        >
+          <X className="mr-1 h-3 w-3" />
+          Clear all
+        </Button>
       )}
+    </div>
+  );
+}
+
+interface FilterRowProps {
+  label: string;
+  htmlFor?: string;
+  onClear?: () => void;
+  children: React.ReactNode;
+}
+
+function FilterRow({ label, htmlFor, onClear, children }: FilterRowProps) {
+  return (
+    <div className="grid gap-3">
+      <div className="flex items-center justify-between">
+        <Label htmlFor={htmlFor}>{label}</Label>
+        {onClear && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      {children}
     </div>
   );
 }
@@ -164,22 +237,46 @@ function MultiSelectFilter({
     }
   };
 
+  const selectedOptions = selected
+    .map((value) => options.find((o) => o.value === value))
+    .filter((o): o is { value: string; label: string } => Boolean(o));
+
   return (
     <Popover>
       <PopoverTrigger asChild>
         <Button
           variant="outline"
           role="combobox"
-          className="h-9 w-full justify-between font-normal"
+          className="h-auto min-h-9 w-full justify-between font-normal"
         >
-          {selected.length > 0 ? (
-            <div className="flex items-center gap-1.5 overflow-hidden">
-              <Badge variant="secondary" className="h-5 px-1.5 text-xs">
-                {selected.length}
-              </Badge>
-              <span className="truncate text-xs text-muted-foreground">
-                {placeholder}
-              </span>
+          {selectedOptions.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1 py-0.5">
+              {selectedOptions.length <= 2 ? (
+                selectedOptions.map((o) => (
+                  <Badge
+                    key={o.value}
+                    variant="secondary"
+                    className="h-5 px-1.5 text-xs font-normal"
+                  >
+                    {o.label}
+                  </Badge>
+                ))
+              ) : (
+                <>
+                  <Badge
+                    variant="secondary"
+                    className="h-5 px-1.5 text-xs font-normal"
+                  >
+                    {selectedOptions[0].label}
+                  </Badge>
+                  <Badge
+                    variant="secondary"
+                    className="h-5 px-1.5 text-xs font-normal"
+                  >
+                    +{selectedOptions.length - 1} more
+                  </Badge>
+                </>
+              )}
             </div>
           ) : (
             <span className="text-muted-foreground text-sm">{placeholder}</span>
@@ -187,33 +284,34 @@ function MultiSelectFilter({
           <ChevronsUpDown className="ml-1 h-3.5 w-3.5 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[200px] p-0" align="start">
+      <PopoverContent
+        className="w-[var(--radix-popover-trigger-width)] p-0"
+        align="start"
+      >
         <Command>
-          <CommandInput placeholder={`Search...`} className="h-8 text-sm" />
+          <CommandInput placeholder="Search..." className="h-8 text-sm" />
           <CommandList>
             <CommandEmpty className="py-2 text-center text-xs">
               No results.
             </CommandEmpty>
             <CommandGroup>
-              <ScrollArea className="h-[200px]">
-                {options.map((option) => (
-                  <CommandItem
-                    key={option.value}
-                    onSelect={() => toggleOption(option.value)}
-                    className="text-sm"
-                  >
-                    <Check
-                      className={cn(
-                        "mr-2 h-3.5 w-3.5",
-                        selected.includes(option.value)
-                          ? "opacity-100"
-                          : "opacity-0"
-                      )}
-                    />
-                    {option.label}
-                  </CommandItem>
-                ))}
-              </ScrollArea>
+              {options.map((option) => (
+                <CommandItem
+                  key={option.value}
+                  onSelect={() => toggleOption(option.value)}
+                  className="text-sm"
+                >
+                  <Check
+                    className={cn(
+                      "mr-2 h-3.5 w-3.5",
+                      selected.includes(option.value)
+                        ? "opacity-100"
+                        : "opacity-0"
+                    )}
+                  />
+                  {option.label}
+                </CommandItem>
+              ))}
             </CommandGroup>
           </CommandList>
         </Command>

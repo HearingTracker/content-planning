@@ -70,11 +70,10 @@ export function DataTable({ data }: DataTableProps) {
   });
 
   // Get selected product IDs for bulk actions
+  const selectedRows = table.getFilteredSelectedRowModel().rows;
   const selectedProductIds = React.useMemo(() => {
-    return table
-      .getFilteredSelectedRowModel()
-      .rows.map((row) => row.original.id);
-  }, [table.getFilteredSelectedRowModel().rows]);
+    return selectedRows.map((row) => row.original.id);
+  }, [selectedRows]);
 
   const handleBulkActionComplete = React.useCallback(() => {
     setRowSelection({});

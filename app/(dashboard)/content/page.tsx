@@ -4,15 +4,17 @@ import { useState, useEffect, useCallback, useMemo, useTransition } from "react"
 import { toast } from "sonner";
 import { useQueryStates, parseAsString, parseAsArrayOf, parseAsInteger } from "nuqs";
 import { format, startOfMonth, endOfMonth } from "date-fns";
-import { Plus, Filter, ChevronDown } from "lucide-react";
+import { Plus, Filter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { ContentFiltersPanel } from "./components/content-filters";
 import { ContentDataTable } from "./components/content-data-table";
 import { ContentKanban } from "./components/content-kanban";
@@ -112,15 +114,22 @@ export default function ContentPage() {
   );
 
   // Open modal from URL params (e.g., from notification link)
-  useEffect(() => {
-    if (urlState.item && items.length > 0 && !isLoading) {
-      const itemToEdit = items.find((i) => i.id === urlState.item);
-      if (itemToEdit) {
-        setEditingItem(itemToEdit);
-        setEditModalOpen(true);
-      }
+  const [openedForUrlItem, setOpenedForUrlItem] = useState<number | null>(null);
+  if (
+    urlState.item &&
+    urlState.item !== openedForUrlItem &&
+    items.length > 0 &&
+    !isLoading
+  ) {
+    const itemToEdit = items.find((i) => i.id === urlState.item);
+    if (itemToEdit) {
+      setOpenedForUrlItem(urlState.item);
+      setEditingItem(itemToEdit);
+      setEditModalOpen(true);
     }
-  }, [urlState.item, items, isLoading]);
+  } else if (!urlState.item && openedForUrlItem !== null) {
+    setOpenedForUrlItem(null);
+  }
 
   // Promote brief to content stage when brief_id is in URL
   useEffect(() => {
@@ -331,71 +340,54 @@ export default function ContentPage() {
 
   return (
     <div className={isKanban ? "flex flex-col h-[calc(100vh-5.5rem)] min-w-0 -mb-6" : "space-y-4 min-w-0"}>
-      {/* Header */}
-      <div className={`flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between ${isKanban ? "mb-4" : ""}`}>
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
-            Content
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Manage your content pipeline
-          </p>
+      {/* Toolbar */}
+      <div className={`flex items-center justify-between gap-3 ${isKanban ? "mb-3" : ""}`}>
+        <div className="flex items-center gap-3 min-w-0">
+          {view !== "calendar" && (
+            <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
+              <SheetTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8">
+                  <Filter className="h-4 w-4" />
+                  Filters
+                  {activeFilterCount > 0 && (
+                    <span className="ml-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground">
+                      {activeFilterCount}
+                    </span>
+                  )}
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="right" className="sm:max-w-md w-full overflow-y-auto">
+                <SheetHeader>
+                  <SheetTitle>Filters</SheetTitle>
+                </SheetHeader>
+                <div className="px-4 pb-4">
+                  <ContentFiltersPanel
+                    filters={filters}
+                    onFiltersChange={handleFiltersChange}
+                    filterOptions={filterOptions}
+                  />
+                </div>
+              </SheetContent>
+            </Sheet>
+          )}
+          {view !== "calendar" && (
+            <span className="text-sm text-muted-foreground whitespace-nowrap">
+              {isLoading ? (
+                <Skeleton className="h-4 w-20" />
+              ) : (
+                `${filteredItems.length} items`
+              )}
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <ViewToggle view={view} onViewChange={handleViewChange} />
-          <Button onClick={handleCreateNew}>
+          <Button onClick={handleCreateNew} size="sm" className="h-8">
             <Plus className="h-4 w-4" />
             New content
           </Button>
         </div>
       </div>
-
-      {/* Filters (not shown in calendar view) */}
-      {view !== "calendar" && (
-        <Collapsible
-          open={filtersOpen}
-          onOpenChange={setFiltersOpen}
-          className={`group/collapsible rounded-lg border bg-card ${isKanban ? "mb-4" : ""}`}
-        >
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              className="flex w-full items-center justify-between p-4 text-left hover:bg-muted/50 transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <Filter className="h-4 w-4" />
-                <span className="font-medium">Filters</span>
-                {activeFilterCount > 0 && (
-                  <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground">
-                    {activeFilterCount}
-                  </span>
-                )}
-              </div>
-              <ChevronDown className="h-4 w-4 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-180" />
-            </button>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="border-t p-4">
-              <ContentFiltersPanel
-                filters={filters}
-                onFiltersChange={handleFiltersChange}
-                filterOptions={filterOptions}
-              />
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-      )}
-
-      {/* Results count */}
-      {view !== "calendar" && (
-        <div className={`text-sm text-muted-foreground ${isKanban ? "mb-4" : ""}`}>
-          {isLoading ? (
-            <Skeleton className="h-4 w-24" />
-          ) : (
-            `${filteredItems.length} content items`
-          )}
-        </div>
-      )}
 
       {/* Content View */}
       {isLoading ? (

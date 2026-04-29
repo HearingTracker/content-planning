@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQueryStates, parseAsString, parseAsInteger } from "nuqs";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -119,46 +119,71 @@ export default function StrategyPage() {
   const activeTab = urlState.tab as StrategyTab;
 
   // Deep link: auto-open brief from URL
-  useEffect(() => {
-    if (urlState.brief && briefs.length > 0 && !isBriefsLoading) {
-      const briefToOpen = briefs.find((b) => b.id === urlState.brief);
-      if (briefToOpen) {
-        if (activeTab !== "briefs") {
-          setUrlState({ tab: "briefs" });
-        }
-        setEditingBrief(briefToOpen);
-        setBriefDialogOpen(true);
+  const [openedForUrlBrief, setOpenedForUrlBrief] = useState<number | null>(null);
+  if (
+    urlState.brief &&
+    urlState.brief !== openedForUrlBrief &&
+    briefs.length > 0 &&
+    !isBriefsLoading
+  ) {
+    const briefToOpen = briefs.find((b) => b.id === urlState.brief);
+    if (briefToOpen) {
+      setOpenedForUrlBrief(urlState.brief);
+      if (activeTab !== "briefs") {
+        setUrlState({ tab: "briefs" });
       }
+      setEditingBrief(briefToOpen);
+      setBriefDialogOpen(true);
     }
-  }, [urlState.brief, briefs, isBriefsLoading]);
+  } else if (!urlState.brief && openedForUrlBrief !== null) {
+    setOpenedForUrlBrief(null);
+  }
 
   // Deep link: auto-open idea from URL
-  useEffect(() => {
-    if (urlState.idea && ideas.length > 0 && !isIdeasLoading) {
-      const ideaToOpen = ideas.find((i) => i.id === urlState.idea);
-      if (ideaToOpen) {
-        if (activeTab !== "ideas") {
-          setUrlState({ tab: "ideas" });
-        }
-        setEditingIdea(ideaToOpen);
-        setIdeaDialogOpen(true);
+  const [openedForUrlIdea, setOpenedForUrlIdea] = useState<number | null>(null);
+  if (
+    urlState.idea &&
+    urlState.idea !== openedForUrlIdea &&
+    ideas.length > 0 &&
+    !isIdeasLoading
+  ) {
+    const ideaToOpen = ideas.find((i) => i.id === urlState.idea);
+    if (ideaToOpen) {
+      setOpenedForUrlIdea(urlState.idea);
+      if (activeTab !== "ideas") {
+        setUrlState({ tab: "ideas" });
       }
+      setEditingIdea(ideaToOpen);
+      setIdeaDialogOpen(true);
     }
-  }, [urlState.idea, ideas, isIdeasLoading]);
+  } else if (!urlState.idea && openedForUrlIdea !== null) {
+    setOpenedForUrlIdea(null);
+  }
 
   // Deep link: auto-open campaign from URL
-  useEffect(() => {
-    if (urlState.campaign && campaigns.length > 0 && !isCampaignsLoading) {
-      const campaignToOpen = campaigns.find((c) => c.campaign_id === urlState.campaign);
-      if (campaignToOpen) {
-        if (activeTab !== "campaigns") {
-          setUrlState({ tab: "campaigns" });
-        }
-        setEditingCampaign(campaignToOpen);
-        setCampaignDialogOpen(true);
+  const [openedForUrlCampaign, setOpenedForUrlCampaign] = useState<number | null>(
+    null
+  );
+  if (
+    urlState.campaign &&
+    urlState.campaign !== openedForUrlCampaign &&
+    campaigns.length > 0 &&
+    !isCampaignsLoading
+  ) {
+    const campaignToOpen = campaigns.find(
+      (c) => c.campaign_id === urlState.campaign
+    );
+    if (campaignToOpen) {
+      setOpenedForUrlCampaign(urlState.campaign);
+      if (activeTab !== "campaigns") {
+        setUrlState({ tab: "campaigns" });
       }
+      setEditingCampaign(campaignToOpen);
+      setCampaignDialogOpen(true);
     }
-  }, [urlState.campaign, campaigns, isCampaignsLoading]);
+  } else if (!urlState.campaign && openedForUrlCampaign !== null) {
+    setOpenedForUrlCampaign(null);
+  }
 
   // Tab counts
   const counts = useMemo(

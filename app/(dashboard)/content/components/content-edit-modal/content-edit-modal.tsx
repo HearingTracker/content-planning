@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Loader2, FileText, Settings, Users, Calendar, Paperclip, MessageSquare, Package, Link as LinkIcon } from "lucide-react";
 import {
   Dialog,
@@ -43,6 +43,44 @@ interface ContentEditModalProps {
   initialData?: Partial<ContentItemInput> | null;
 }
 
+function buildFormData(
+  item: ContentItem | null,
+  initialData?: Partial<ContentItemInput> | null
+): ContentItemInput {
+  if (item) {
+    return {
+      title: item.title,
+      content_type_id: item.content_type?.id || null,
+      workflow_status_id: item.workflow_status?.id || null,
+      campaign_id: item.campaign?.id || null,
+      priority: item.priority,
+      due_date: item.due_date,
+      scheduled_date: item.scheduled_date,
+      scheduled_time: item.scheduled_time,
+      notes: item.notes,
+      storyblok_url: item.storyblok_url,
+      body: item.body,
+    };
+  }
+  return {
+    title: initialData?.title || "",
+    content_type_id: initialData?.content_type_id || null,
+    workflow_status_id: initialData?.workflow_status_id || null,
+    campaign_id: initialData?.campaign_id || null,
+    priority: initialData?.priority || "medium",
+    due_date: initialData?.due_date || null,
+    scheduled_date: initialData?.scheduled_date || null,
+    scheduled_time: initialData?.scheduled_time || null,
+    notes: initialData?.notes || null,
+    storyblok_url: initialData?.storyblok_url || null,
+    body: initialData?.body || null,
+  };
+}
+
+function itemKey(item: ContentItem | null): string {
+  return item ? `item-${item.id}` : "new";
+}
+
 export function ContentEditModal({
   open,
   onOpenChange,
@@ -55,31 +93,31 @@ export function ContentEditModal({
 }: ContentEditModalProps) {
   const [activeTab, setActiveTab] = useState("content");
   const [localCampaigns, setLocalCampaigns] = useState<CampaignSummary[]>(filterOptions.campaigns);
-  const [contentItemId, setContentItemId] = useState<number | null>(null);
+  const [prevCampaigns, setPrevCampaigns] = useState(filterOptions.campaigns);
+  const [contentItemId, setContentItemId] = useState<number | null>(item?.id ?? null);
 
   // Form state
-  const [formData, setFormData] = useState<ContentItemInput>({
-    title: "",
-    content_type_id: null,
-    workflow_status_id: null,
-    campaign_id: null,
-    priority: "medium",
-    due_date: null,
-    scheduled_date: null,
-    scheduled_time: null,
-    notes: null,
-    storyblok_url: null,
-    body: null,
-  });
+  const [formData, setFormData] = useState<ContentItemInput>(() =>
+    buildFormData(item, initialData)
+  );
 
   // Local state for attachments/links/assignments (for existing items)
-  const [attachments, setAttachments] = useState<ContentAttachment[]>([]);
-  const [links, setLinks] = useState<ContentLink[]>([]);
-  const [assignments, setAssignments] = useState<ContentAssignment[]>([]);
+  const [attachments, setAttachments] = useState<ContentAttachment[]>(
+    item?.attachments || []
+  );
+  const [links, setLinks] = useState<ContentLink[]>(item?.links || []);
+  const [assignments, setAssignments] = useState<ContentAssignment[]>(
+    item?.assignments || []
+  );
 
   // Pending state for new items
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [pendingLinks, setPendingLinks] = useState<ContentLinkInput[]>([]);
+
+  // Track item/open identity to reset state when the modal opens or switches items.
+  const [prevItemKey, setPrevItemKey] = useState<string | null>(
+    open ? itemKey(item) : null
+  );
 
   // Auto-save hook for existing items
   const { scheduleAutoSave, flushAndInvalidate, saveStatus, cancelPending } = useAutoSave({
@@ -90,58 +128,27 @@ export function ContentEditModal({
   // Mutation hook for creating new items
   const createContentItemMutation = useCreateContentItem();
 
-  // Sync campaigns with filterOptions
-  useEffect(() => {
+  // Sync campaigns with filterOptions during render
+  if (prevCampaigns !== filterOptions.campaigns) {
+    setPrevCampaigns(filterOptions.campaigns);
     setLocalCampaigns(filterOptions.campaigns);
-  }, [filterOptions.campaigns]);
+  }
 
-  // Initialize form when item changes
-  useEffect(() => {
+  // Initialize form when modal opens or item changes
+  const currentItemKey = open ? itemKey(item) : null;
+  if (currentItemKey !== prevItemKey) {
+    setPrevItemKey(currentItemKey);
     if (open) {
-      if (item) {
-        setContentItemId(item.id);
-        setFormData({
-          title: item.title,
-          content_type_id: item.content_type?.id || null,
-          workflow_status_id: item.workflow_status?.id || null,
-          campaign_id: item.campaign?.id || null,
-          priority: item.priority,
-          due_date: item.due_date,
-          scheduled_date: item.scheduled_date,
-          scheduled_time: item.scheduled_time,
-          notes: item.notes,
-          storyblok_url: item.storyblok_url,
-          body: item.body,
-        });
-        setAttachments(item.attachments || []);
-        setLinks(item.links || []);
-        setAssignments(item.assignments || []);
-        setPendingFiles([]);
-        setPendingLinks([]);
-      } else {
-        setContentItemId(null);
-        setFormData({
-          title: initialData?.title || "",
-          content_type_id: initialData?.content_type_id || null,
-          workflow_status_id: initialData?.workflow_status_id || null,
-          campaign_id: initialData?.campaign_id || null,
-          priority: initialData?.priority || "medium",
-          due_date: initialData?.due_date || null,
-          scheduled_date: initialData?.scheduled_date || null,
-          scheduled_time: initialData?.scheduled_time || null,
-          notes: initialData?.notes || null,
-          storyblok_url: initialData?.storyblok_url || null,
-          body: initialData?.body || null,
-        });
-        setAttachments([]);
-        setLinks([]);
-        setAssignments([]);
-        setPendingFiles([]);
-        setPendingLinks([]);
-      }
+      setContentItemId(item?.id ?? null);
+      setFormData(buildFormData(item, initialData));
+      setAttachments(item?.attachments || []);
+      setLinks(item?.links || []);
+      setAssignments(item?.assignments || []);
+      setPendingFiles([]);
+      setPendingLinks([]);
       setActiveTab("content");
     }
-  }, [item, open, initialData]);
+  }
 
   // Handle form field changes with auto-save
   const handleFormChange = useCallback((updates: Partial<ContentItemInput>) => {

@@ -120,7 +120,7 @@ export function QuickEditAssignments({
           <DialogHeader>
             <DialogTitle>Edit Assignments</DialogTitle>
             <DialogDescription>
-              Manage team assignments for "{item.title}"
+              Manage team assignments for &ldquo;{item.title}&rdquo;
             </DialogDescription>
           </DialogHeader>
 

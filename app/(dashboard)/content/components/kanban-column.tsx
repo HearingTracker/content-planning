@@ -81,7 +81,7 @@ export function KanbanColumn({
       </div>
 
       {/* Column Content */}
-      <ScrollArea className="flex-1 min-h-0">
+      <ScrollArea className="flex-1 min-h-0 [&>[data-radix-scroll-area-viewport]>div]:!block">
         <div
           ref={setNodeRef}
           className={cn(
