@@ -16,7 +16,7 @@ async function requireEditor(): Promise<string> {
 export async function getSeoPages(): Promise<SeoPage[]> {
   const supabase = await createClient();
   const { data, error } = await supabase
-    .from("cp_seo_pages")
+    .from("cp_seo_pages_with_stats")
     .select("*")
     .order("earnings_90d", { ascending: false });
   if (error) throw new Error(error.message);

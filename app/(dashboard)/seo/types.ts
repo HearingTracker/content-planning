@@ -9,6 +9,19 @@ export type SeoPage = {
   conversions_90d: number;
   open_opportunities: number;
   last_synced_at: string;
+  // Aggregated open-opportunity stats from cp_seo_pages_with_stats view.
+  // Numeric fields come back as strings from Postgres (numeric type), so callers
+  // should `Number(...)` them.
+  open_primary: number;
+  open_supporting: number;
+  open_secondary: number;
+  open_impressions: number;
+  open_missed_clicks: number;
+  open_volume: number;
+  avg_position: number | null;
+  max_score: number;
+  top_query: string | null;
+  top_kind: SeoOppKind | null;
 };
 
 export type SeoOpportunity = {
