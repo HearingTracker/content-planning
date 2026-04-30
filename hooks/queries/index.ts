@@ -14,3 +14,13 @@ export { useAutoSave } from "./use-auto-save";
 // User hooks
 export { useCurrentUser, useCurrentUserRole, useCanDelete } from "./use-current-user";
 export type { UserRole } from "./use-current-user";
+
+// SEO hooks
+export {
+  useSeoPages,
+  useSeoOpportunities,
+  useUpdateOpportunityStatus,
+  useAssignOpportunity,
+  useUpdateOpportunityNotes,
+  useRefreshSeoNow,
+} from "./use-seo";

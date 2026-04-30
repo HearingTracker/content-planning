@@ -13,6 +13,7 @@ const pageTitles: Record<string, string> = {
   "/settings": "Settings",
   "/settings/users": "User Management",
   "/settings/notifications": "Notification Settings",
+  "/seo": "SEO Opportunities",
 };
 
 interface PageHeaderProps {

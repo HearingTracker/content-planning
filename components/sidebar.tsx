@@ -11,6 +11,7 @@ import {
   LogOut,
   Users,
   Package,
+  TrendingUp,
 } from "lucide-react";
 import {
   Sidebar,
@@ -44,6 +45,7 @@ const navigation = [
   { name: "Products", href: "/products", icon: Package },
   { name: "Content", href: "/content", icon: FileText },
   { name: "Strategy", href: "/strategy", icon: Lightbulb },
+  { name: "SEO", href: "/seo", icon: TrendingUp },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
 

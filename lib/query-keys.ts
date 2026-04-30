@@ -30,4 +30,10 @@ export const queryKeys = {
       [...queryKeys.notifications.all, "list", { limit }] as const,
     unreadCount: () => [...queryKeys.notifications.all, "unreadCount"] as const,
   },
+  seo: {
+    all: ["seo"] as const,
+    pages: () => [...queryKeys.seo.all, "pages"] as const,
+    opportunities: (page: string) =>
+      [...queryKeys.seo.all, "opportunities", page] as const,
+  },
 } as const;
