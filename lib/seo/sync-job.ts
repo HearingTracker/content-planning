@@ -204,7 +204,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
     }));
     let done = 0;
     const labels = await labelClustersConcurrently(labelInputs, {
-      concurrency: 2,
+      concurrency: 5,
       onResult: (i, r) => {
         llmIn += r.tokens.input;
         llmOut += r.tokens.output;
