@@ -1,78 +1,31 @@
 "use client";
 
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+// Per-page drawer rendering one card per cluster. The coverage classifier
+// (Phase 1B) fills in kind/recommendation/confidence per cluster; pre-classified
+// rows still render with kind='needs_review' and a neutral guidance footer
+// prompting an admin re-sync.
+
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ArrowUpRight, CheckCircle2, ExternalLink, Info, Plus, Sparkles, Type } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { AlertTriangle, ExternalLink, Info, Sparkles } from "lucide-react";
+import { Fragment, useState } from "react";
 import { useSeoOpportunities } from "@/hooks/queries";
 import { StatusSelect } from "./status-select";
+import { getKindMeta } from "./kind-meta";
 import { cn } from "@/lib/utils";
-import type { SeoOpportunity, SeoOppKind, SeoPage } from "../types";
-
-type KindMeta = {
-  label: string;
-  shortLabel: string;
-  Icon: typeof Plus;
-  stripe: string;
-  badge: string;
-  iconWrap: string;
-  summary: (query: string, opp: SeoOpportunity) => string;
-  steps: (query: string, opp: SeoOpportunity) => string[] | null;
-};
-
-const KIND_META: Record<SeoOppKind, KindMeta> = {
-  primary: {
-    label: "Already optimized",
-    shortLabel: "Optimized",
-    Icon: CheckCircle2,
-    stripe: "before:bg-emerald-500",
-    badge: "bg-emerald-100 text-emerald-900 ring-1 ring-inset ring-emerald-200",
-    iconWrap: "bg-emerald-100 text-emerald-700",
-    summary: (q) =>
-      `"${q}" is already in this page's title or main heading. No copy change needed — just monitor performance.`,
-    steps: () => null,
-  },
-  supporting: {
-    label: "Promote to a heading",
-    shortLabel: "Promote",
-    Icon: Type,
-    stripe: "before:bg-blue-500",
-    badge: "bg-blue-100 text-blue-900 ring-1 ring-inset ring-blue-200",
-    iconWrap: "bg-blue-100 text-blue-700",
-    summary: (q) =>
-      `Your page already mentions "${q}" in the body, but search engines treat headings as topic signals — making it an H2 tells Google this is a focus area.`,
-    steps: (q, o) => {
-      const lines: string[] = [];
-      lines.push(`Add or rename an H2 to include "${q}" verbatim.`);
-      if (o.novel_tokens) {
-        lines.push(`Make sure the heading contains: ${o.novel_tokens}.`);
-      }
-      lines.push(`Expand the section beneath that heading with 2–3 paragraphs covering the topic.`);
-      return lines;
-    },
-  },
-  secondary: {
-    label: "Add a new section",
-    shortLabel: "New section",
-    Icon: Plus,
-    stripe: "before:bg-amber-500",
-    badge: "bg-amber-100 text-amber-900 ring-1 ring-inset ring-amber-200",
-    iconWrap: "bg-amber-100 text-amber-700",
-    summary: (q, o) =>
-      o.phrase_in_body > 0
-        ? `Your page barely mentions "${q}" (${o.phrase_in_body}× in body) — but Google is still ranking it. A dedicated section will capture this traffic instead of leaking it.`
-        : `Your page ranks for "${q}" without actually covering it. Add a section about it before a competitor takes the spot.`,
-    steps: (q, o) => {
-      const lines: string[] = [];
-      lines.push(`Add a new H2 section titled around "${q}".`);
-      if (o.novel_tokens) {
-        lines.push(`Make sure these words appear naturally in the section: ${o.novel_tokens}.`);
-      }
-      lines.push(`Aim for 150–300 words of original, useful content — not a paraphrase.`);
-      return lines;
-    },
-  },
-};
+import type { SeoOpportunity, SeoPage } from "../types";
 
 export function SeoPageDrilldown({
   page,
@@ -90,7 +43,7 @@ export function SeoPageDrilldown({
       acc[o.kind] = (acc[o.kind] ?? 0) + 1;
       return acc;
     },
-    { primary: 0, supporting: 0, secondary: 0 } as Record<SeoOppKind, number>,
+    {} as Record<string, number>,
   );
 
   return (
@@ -127,11 +80,7 @@ export function SeoPageDrilldown({
                   value={`$${Math.round(page.earnings_90d).toLocaleString()}`}
                 />
                 <Stat label="Conversions · 90d" value={String(page.conversions_90d)} />
-                <Stat
-                  label="Source"
-                  value={page.meta_source ?? "unknown"}
-                  mono
-                />
+                <Stat label="Source" value={page.meta_source ?? "unknown"} mono />
               </div>
 
               {(opps?.length ?? 0) > 0 && (
@@ -139,15 +88,21 @@ export function SeoPageDrilldown({
                   <span className="text-muted-foreground text-[11px] uppercase tracking-wider">
                     At a glance
                   </span>
-                  {counts.secondary > 0 && (
-                    <CountChip n={counts.secondary} label="add section" tone="amber" />
-                  )}
-                  {counts.supporting > 0 && (
-                    <CountChip n={counts.supporting} label="promote heading" tone="blue" />
-                  )}
-                  {counts.primary > 0 && (
-                    <CountChip n={counts.primary} label="optimized" tone="emerald" />
-                  )}
+                  {Object.entries(counts).map(([key, n]) => {
+                    const meta = getKindMeta(key);
+                    return (
+                      <span
+                        key={key}
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                          meta.tone.chip,
+                        )}
+                      >
+                        <span className="tabular-nums">{n}</span>
+                        <span className="opacity-90">{meta.shortLabel.toLowerCase()}</span>
+                      </span>
+                    );
+                  })}
                 </div>
               )}
             </SheetHeader>
@@ -162,14 +117,16 @@ export function SeoPageDrilldown({
               )}
               {!isLoading && (opps?.length ?? 0) === 0 && (
                 <div className="rounded-md border border-dashed bg-background py-10 text-center">
-                  <p className="text-foreground text-sm">No open opportunities for this page.</p>
+                  <p className="text-foreground text-sm">
+                    No open clusters for this page.
+                  </p>
                   <p className="text-muted-foreground mt-1 text-xs">
                     Try lowering the cron min-impressions threshold or wait for the next sync.
                   </p>
                 </div>
               )}
               {opps?.map((o, i) => (
-                <OpportunityCard key={o.id} opp={o} delay={i * 40} />
+                <ClusterCard key={o.id} opp={o} delay={i * 40} />
               ))}
             </div>
           </TooltipProvider>
@@ -183,44 +140,32 @@ function Stat({ label, value, mono }: { label: string; value: string; mono?: boo
   return (
     <div className="bg-background px-3 py-2.5">
       <div className="text-muted-foreground text-[10px] uppercase tracking-wider">{label}</div>
-      <div className={cn("text-foreground mt-0.5 text-base font-semibold tabular-nums", mono && "font-mono text-sm font-medium tracking-tight")}>
+      <div
+        className={cn(
+          "text-foreground mt-0.5 text-base font-semibold tabular-nums",
+          mono && "font-mono text-sm font-medium tracking-tight",
+        )}
+      >
         {value}
       </div>
     </div>
   );
 }
 
-function CountChip({ n, label, tone }: { n: number; label: string; tone: "amber" | "blue" | "emerald" }) {
-  const toneClass =
-    tone === "amber"
-      ? "bg-amber-100 text-amber-900 ring-amber-200"
-      : tone === "blue"
-        ? "bg-blue-100 text-blue-900 ring-blue-200"
-        : "bg-emerald-100 text-emerald-900 ring-emerald-200";
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset",
-        toneClass,
-      )}
-    >
-      <span className="tabular-nums">{n}</span>
-      <span className="opacity-80">{label}</span>
-    </span>
-  );
-}
+// ─── Cluster card ──────────────────────────────────────────────────────────
 
-function OpportunityCard({ opp: o, delay }: { opp: SeoOpportunity; delay: number }) {
-  const meta = KIND_META[o.kind];
+function ClusterCard({ opp: o, delay }: { opp: SeoOpportunity; delay: number }) {
+  const meta = getKindMeta(o.kind);
   const { Icon } = meta;
-  const steps = meta.steps(o.query, o);
 
-  const expectedClicks =
-    o.impressions != null && o.expected_ctr_pct != null
-      ? Math.round((o.impressions * o.expected_ctr_pct) / 100)
-      : null;
-  const missedClicks =
-    expectedClicks != null && o.clicks != null ? Math.max(0, expectedClicks - o.clicks) : null;
+  const avgPos = o.avg_position != null ? Number(o.avg_position) : null;
+  const totalImp = Number(o.total_impressions ?? 0);
+  const weightedCtr = o.weighted_ctr_pct != null ? Number(o.weighted_ctr_pct) : null;
+  const expectedCtr = o.expected_ctr_pct != null ? Number(o.expected_ctr_pct) : null;
+  const totalVol = Number(o.total_volume ?? 0);
+  const missedClicks = Number(o.total_missed_clicks ?? 0);
+
+  const isPending = o.kind === "needs_review";
 
   return (
     <article
@@ -229,13 +174,19 @@ function OpportunityCard({ opp: o, delay }: { opp: SeoOpportunity; delay: number
         "relative overflow-hidden rounded-lg border bg-background shadow-sm",
         "before:absolute before:inset-y-0 before:left-0 before:w-1",
         "animate-in fade-in slide-in-from-bottom-2 fill-mode-both duration-500",
-        meta.stripe,
       )}
     >
-      {/* Action header */}
+      <span className={cn("absolute inset-y-0 left-0 w-1", meta.tone.stripe)} aria-hidden />
+
+      {/* Header: action label + cluster headline + status */}
       <header className="flex items-start justify-between gap-3 px-5 pt-4 pb-3">
         <div className="flex items-start gap-3 min-w-0">
-          <div className={cn("mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md", meta.iconWrap)}>
+          <div
+            className={cn(
+              "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+              meta.tone.iconWrap,
+            )}
+          >
             <Icon className="h-4 w-4" />
           </div>
           <div className="min-w-0">
@@ -243,16 +194,19 @@ function OpportunityCard({ opp: o, delay }: { opp: SeoOpportunity; delay: number
               <span
                 className={cn(
                   "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
-                  meta.badge,
+                  meta.tone.chip,
                 )}
               >
-                {meta.label}
+                {meta.displayLabel}
               </span>
-              <PositionPill position={o.position} />
-              <DifficultyBar kd={o.kd} />
+              {avgPos != null && <PositionPill position={avgPos} />}
+              {(o.min_kd != null || o.max_kd != null) && (
+                <KdRange min={o.min_kd} max={o.max_kd} />
+              )}
+              {o.is_branded && o.brand && <BrandTag brand={o.brand} />}
             </div>
             <h3 className="text-foreground mt-2 text-lg font-semibold leading-tight tracking-tight">
-              {o.query}
+              {o.cluster_label}
             </h3>
           </div>
         </div>
@@ -267,102 +221,120 @@ function OpportunityCard({ opp: o, delay }: { opp: SeoOpportunity; delay: number
               </span>
             </TooltipTrigger>
             <TooltipContent side="left" className="max-w-xs">
-              Internal priority score blending revenue, impressions, position gap, and keyword
-              difficulty. Higher = work on this first.
+              Internal priority score blending impressions, position gap, keyword difficulty,
+              and revenue. Higher = work on this first.
             </TooltipContent>
           </Tooltip>
         </div>
       </header>
 
-      {/* Plain-language summary */}
-      <p className="text-foreground/90 px-5 text-[13px] leading-relaxed">
-        {meta.summary(o.query, o)}
-      </p>
+      {/* Member queries — anchors pinned, rest collapsed past a soft cap. */}
+      {o.member_queries.length > 0 && (
+        <QueryChipsBlock
+          queries={o.member_queries}
+          anchors={o.anchor_queries}
+        />
+      )}
 
-      {/* Metrics row */}
+      {/* LLM recommendation (1B) when present, else neutral kind blurb. */}
+      {o.recommendation ? (
+        <div className="px-5">
+          <p className="text-foreground/90 text-[13px] leading-relaxed">
+            <RecommendationText text={o.recommendation} />
+          </p>
+          {o.confidence != null && o.confidence < 0.6 && (
+            <p className="text-amber-700 mt-1 inline-flex items-center gap-1 text-[11px]">
+              <AlertTriangle className="h-3 w-3" />
+              Low confidence ({Math.round(o.confidence * 100)}%) — review before acting.
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="text-foreground/90 px-5 text-[13px] leading-relaxed">{meta.description}</p>
+      )}
+
+      {/* Cannibalization callout */}
+      {o.cannibal_pages.length > 0 && (
+        <CannibalBlock pages={o.cannibal_pages} />
+      )}
+
+      {/* Aggregate metrics */}
       <div className="mx-5 mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Metric
           label="Impressions / mo"
-          value={o.impressions != null ? o.impressions.toLocaleString() : "—"}
-          help="How many times this page appeared in Google results for this query in the last 28 days."
-        />
-        <Metric
-          label="Clicks / mo"
-          value={o.clicks != null ? o.clicks.toLocaleString() : "—"}
-          help="How many people actually clicked through from search to this page."
-        />
-        <Metric
-          label="CTR"
-          value={`${(o.ctr_pct ?? 0).toFixed(2)}%`}
-          delta={
-            o.expected_ctr_pct != null
-              ? {
-                  expected: `${o.expected_ctr_pct.toFixed(1)}% expected`,
-                  good: (o.ctr_pct ?? 0) >= o.expected_ctr_pct,
-                }
-              : null
-          }
-          help="Click-through rate. Compared against the average CTR for your current ranking position — lower than expected usually means a weak title or snippet."
+          value={totalImp.toLocaleString()}
+          help="Total monthly impressions across all queries in this cluster, from Google Search Console."
         />
         <Metric
           label="Search vol."
-          value={o.volume != null ? o.volume.toLocaleString() : "—"}
-          help="Total monthly searches for this query, per Ahrefs — the size of the prize."
+          value={totalVol > 0 ? totalVol.toLocaleString() : "—"}
+          help="Total monthly search volume across the cluster, per Ahrefs."
+        />
+        <Metric
+          label="CTR"
+          value={weightedCtr != null ? `${weightedCtr.toFixed(2)}%` : "—"}
+          delta={
+            expectedCtr != null && weightedCtr != null
+              ? {
+                  expected: `${expectedCtr.toFixed(1)}% expected`,
+                  good: weightedCtr >= expectedCtr,
+                }
+              : null
+          }
+          help="Weighted click-through rate across the cluster, vs the typical CTR for the queries' average ranking position."
+        />
+        <Metric
+          label="Avg rank"
+          value={avgPos != null ? `#${avgPos.toFixed(1)}` : "—"}
+          help="Mean Google ranking position across the cluster's queries (last 28 days)."
         />
       </div>
 
-      {/* Missed clicks insight */}
-      {missedClicks != null && missedClicks > 5 && (
+      {/* Missed clicks insight when significant */}
+      {missedClicks > 5 && (
         <div className="mx-5 mt-3 flex items-start gap-2 rounded-md border border-dashed border-amber-300/60 bg-amber-50/60 px-3 py-2 text-[12px] leading-snug">
           <Sparkles className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
           <span className="text-amber-900/90">
-            Even at your current rank, you&apos;re missing about{" "}
+            Roughly{" "}
             <span className="font-semibold tabular-nums">{missedClicks.toLocaleString()}</span>{" "}
-            clicks/mo vs the typical CTR for position{" "}
-            <span className="tabular-nums">{o.position?.toFixed(0) ?? "—"}</span>. A stronger title
-            or snippet alone could close most of that gap.
+            extra clicks/mo are within reach if this cluster hit the typical CTR for its current
+            ranking.
           </span>
         </div>
       )}
 
-      {/* What to do */}
-      {steps && steps.length > 0 && (
-        <div className="mx-5 mt-4 rounded-md bg-zinc-50 px-4 py-3 ring-1 ring-inset ring-zinc-200/70">
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-700">
-            <ArrowUpRight className="h-3 w-3" />
-            What to do
-          </div>
-          <ol className="mt-2 space-y-1.5 text-[12.5px] text-foreground/90">
-            {steps.map((step, i) => (
-              <li key={i} className="flex gap-2.5 leading-snug">
-                <span className="text-muted-foreground tabular-nums shrink-0">{i + 1}.</span>
-                <span>{step}</span>
-              </li>
-            ))}
-          </ol>
+      {/* Pending-guidance footer — only when 1B classification hasn't run yet. */}
+      {isPending && (
+        <div className="mx-5 mt-4 rounded-md bg-slate-50 px-4 py-3 ring-1 ring-inset ring-slate-200/70">
+          <p className="text-slate-700 text-[12px] leading-relaxed">
+            Reader-intent guidance for this cluster has not been generated yet. The metrics
+            above show the size of the opportunity; the recommended action will appear once
+            the coverage classifier runs.
+          </p>
         </div>
       )}
 
-      {/* Footer */}
+      {/* Footer: meta */}
       <footer className="text-muted-foreground mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-zinc-100 px-5 py-2.5 text-[11px]">
-        {o.parent_topic && (
+        {o.canonical_query && (
           <span>
-            topic <span className="text-foreground">{o.parent_topic}</span>
+            top query <span className="text-foreground">&ldquo;{o.canonical_query}&rdquo;</span>
           </span>
         )}
-        {o.intents && (
-          <span className="font-mono opacity-80">{o.intents.replace(/\|/g, " · ")}</span>
+        {o.ahrefs_intent_prior && (
+          <span className="font-mono opacity-80">{o.ahrefs_intent_prior}</span>
         )}
-        {o.in_heading && o.kind === "supporting" && (
-          <span className="text-emerald-700">already in a heading</span>
+        {o.match_decision === "review" && (
+          <span className="text-amber-700">match flagged for review</span>
         )}
       </footer>
     </article>
   );
 }
 
-function PositionPill({ position }: { position: number | null }) {
-  if (position == null) return null;
+// ─── Small UI bits ──────────────────────────────────────────────────────────
+
+function PositionPill({ position }: { position: number }) {
   const tone =
     position <= 3
       ? "bg-emerald-100 text-emerald-900 ring-emerald-200"
@@ -382,34 +354,24 @@ function PositionPill({ position }: { position: number | null }) {
         </span>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs">
-        Average Google ranking for this query over the last 28 days. Top-3 → high CTR; 4–10 →
+        Average Google ranking across this cluster&apos;s queries. Top-3 → high CTR; 4–10 →
         page-1 but easy to miss; 11+ → page 2.
       </TooltipContent>
     </Tooltip>
   );
 }
 
-function DifficultyBar({ kd }: { kd: number | null }) {
-  if (kd == null) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="text-muted-foreground inline-flex items-center gap-1 text-[10px] cursor-help">
-            KD —
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>Ahrefs Keyword Difficulty unavailable.</TooltipContent>
-      </Tooltip>
-    );
-  }
-  const segments = 5;
-  const filled = Math.max(1, Math.min(segments, Math.ceil((kd / 100) * segments)));
+function KdRange({ min, max }: { min: number | null; max: number | null }) {
+  const value = min === max || max == null ? `${min ?? "—"}` : `${min ?? "—"}–${max}`;
+  const worst = max ?? min ?? 0;
   const tone =
-    kd <= 20
+    worst <= 20
       ? "bg-emerald-500"
-      : kd <= 50
+      : worst <= 50
         ? "bg-amber-500"
         : "bg-rose-500";
+  const segments = 5;
+  const filled = Math.max(1, Math.min(segments, Math.ceil((worst / 100) * segments)));
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -425,14 +387,190 @@ function DifficultyBar({ kd }: { kd: number | null }) {
               />
             ))}
           </span>
-          <span className="text-muted-foreground text-[10px] tabular-nums">KD {kd}</span>
+          <span className="text-muted-foreground text-[10px] tabular-nums">KD {value}</span>
         </span>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs">
-        Ahrefs Keyword Difficulty (0–100). Roughly: ≤20 easy, 21–50 moderate, 51+ hard. Estimates
-        how many backlinks you&apos;d need to rank in the top 10.
+        Ahrefs Keyword Difficulty range across the cluster (0–100). ≤20 easy, 21–50 moderate,
+        51+ hard. The bar reflects the cluster&apos;s hardest member.
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+function BrandTag({ brand }: { brand: string }) {
+  return (
+    <span className="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-zinc-700 ring-1 ring-inset ring-zinc-200">
+      {brand}
+    </span>
+  );
+}
+
+// ─── Chip blocks with "+N more" expansion ──────────────────────────────────
+
+const QUERY_VISIBLE_CAP = 12;
+const CANNIBAL_VISIBLE_CAP = 5;
+
+/** Anchors first (in their priority order from the classifier), then the rest. */
+function sortQueriesAnchorsFirst(all: string[], anchors: string[]): string[] {
+  const anchorOrder = new Map(anchors.map((q, i) => [q, i] as const));
+  const inAnchors = all.filter((q) => anchorOrder.has(q)).sort(
+    (a, b) => (anchorOrder.get(a)! - anchorOrder.get(b)!),
+  );
+  const rest = all.filter((q) => !anchorOrder.has(q));
+  return [...inAnchors, ...rest];
+}
+
+function QueryChipsBlock({ queries, anchors }: { queries: string[]; anchors: string[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const sorted = sortQueriesAnchorsFirst(queries, anchors);
+  // Always show all anchors; cap the rest. If anchors alone exceed cap, show them all.
+  const visibleCount = expanded
+    ? sorted.length
+    : Math.max(QUERY_VISIBLE_CAP, anchors.length);
+  const visible = sorted.slice(0, visibleCount);
+  const hidden = sorted.length - visible.length;
+
+  return (
+    <div className="px-5 pb-3">
+      <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-1.5">
+        {queries.length} {queries.length === 1 ? "query" : "queries"} in this cluster
+        {anchors.length > 0 && (
+          <span className="ml-2 inline-flex items-center gap-1 normal-case tracking-normal text-amber-700">
+            <Sparkles className="h-3 w-3" /> start with the highlighted ones
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {visible.map((q) => {
+          const isAnchor = anchors.includes(q);
+          return (
+            <Tooltip key={q}>
+              <TooltipTrigger asChild>
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ring-1 ring-inset cursor-help",
+                    isAnchor
+                      ? "bg-amber-50 text-amber-900 ring-amber-200 font-medium"
+                      : "bg-zinc-100 text-zinc-700 ring-zinc-200",
+                  )}
+                >
+                  {isAnchor && <Sparkles className="h-2.5 w-2.5" />}
+                  {q}
+                </span>
+              </TooltipTrigger>
+              {isAnchor && (
+                <TooltipContent className="max-w-xs">
+                  Anchor query — high volume relative to difficulty and close to the top of striking distance. Start the rewrite here.
+                </TooltipContent>
+              )}
+            </Tooltip>
+          );
+        })}
+        {hidden > 0 && (
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="rounded-full bg-white px-2 py-0.5 text-[11px] text-zinc-700 ring-1 ring-inset ring-zinc-300 hover:bg-zinc-50"
+          >
+            +{hidden} more
+          </button>
+        )}
+        {expanded && sorted.length > QUERY_VISIBLE_CAP && (
+          <button
+            type="button"
+            onClick={() => setExpanded(false)}
+            className="rounded-full bg-white px-2 py-0.5 text-[11px] text-zinc-700 ring-1 ring-inset ring-zinc-300 hover:bg-zinc-50"
+          >
+            show less
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CannibalBlock({ pages }: { pages: string[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? pages : pages.slice(0, CANNIBAL_VISIBLE_CAP);
+  const hidden = pages.length - visible.length;
+  return (
+    <div className="mx-5 mt-3 rounded-md border border-rose-200/70 bg-rose-50/60 px-3 py-2 text-[12px] leading-snug">
+      <div className="text-rose-900/90 font-medium mb-1 inline-flex items-center gap-1">
+        <AlertTriangle className="h-3.5 w-3.5" /> Also competing on
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {visible.map((p) => (
+          <a
+            key={p}
+            href={`https://www.hearingtracker.com${p}`}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 rounded-full bg-white/80 px-2 py-0.5 font-mono text-[11px] text-rose-900 ring-1 ring-inset ring-rose-200 hover:bg-white"
+          >
+            {p}
+            <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+          </a>
+        ))}
+        {hidden > 0 && (
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="rounded-full bg-white px-2 py-0.5 text-[11px] text-rose-900 ring-1 ring-inset ring-rose-200 hover:bg-rose-50"
+          >
+            +{hidden} more
+          </button>
+        )}
+        {expanded && pages.length > CANNIBAL_VISIBLE_CAP && (
+          <button
+            type="button"
+            onClick={() => setExpanded(false)}
+            className="rounded-full bg-white px-2 py-0.5 text-[11px] text-rose-900 ring-1 ring-inset ring-rose-200 hover:bg-rose-50"
+          >
+            show less
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Path-like substrings inside the recommendation prose become live links to
+// the production site. Pattern: a leading slash + lowercase alphanumeric/hyphen
+// segments separated by slashes (no trailing slash, no query string). We keep
+// it conservative so commas, periods, and quotes adjacent to the path don't
+// get swallowed.
+const PATH_RE = /\/[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)+/g;
+
+function RecommendationText({ text }: { text: string }) {
+  const parts: Array<string | { kind: "path"; href: string }> = [];
+  let lastIdx = 0;
+  for (const match of text.matchAll(PATH_RE)) {
+    const idx = match.index ?? 0;
+    if (idx > lastIdx) parts.push(text.slice(lastIdx, idx));
+    parts.push({ kind: "path", href: match[0] });
+    lastIdx = idx + match[0].length;
+  }
+  if (lastIdx < text.length) parts.push(text.slice(lastIdx));
+
+  return (
+    <>
+      {parts.map((part, i) =>
+        typeof part === "string" ? (
+          <Fragment key={i}>{part}</Fragment>
+        ) : (
+          <a
+            key={i}
+            href={`https://www.hearingtracker.com${part.href}`}
+            target="_blank"
+            rel="noreferrer"
+            className="font-mono text-[12px] text-rose-800 underline decoration-rose-300 decoration-1 underline-offset-2 hover:decoration-rose-500"
+          >
+            {part.href}
+          </a>
+        ),
+      )}
+    </>
   );
 }
 

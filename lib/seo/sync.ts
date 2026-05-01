@@ -1,8 +1,13 @@
-// Shared sync logic: rebuild SEO opportunity rows, upsert, archive stale, refresh counts.
-// Called by both the cron HTTP route and the in-app "Refresh Now" server action.
+// Cron + admin entry point. Creates a sync_jobs row, runs the Phase 1A
+// clustered pipeline synchronously (await), then returns a small summary.
+//
+// The admin "Refresh now" button uses a different path that returns the
+// jobId immediately and lets the worker run via Next.js after() — that
+// lives in app/(dashboard)/seo/actions.ts. This file is the synchronous
+// entry the cron route calls.
 
 import { createClient as createSb } from "@supabase/supabase-js";
-import { runOpportunityExport } from "./run";
+import { createSyncJob, runSyncJob } from "./sync-job";
 
 function getServiceClient() {
   return createSb(
@@ -13,6 +18,7 @@ function getServiceClient() {
 }
 
 export type SyncResult = {
+  jobId: number;
   pages: number;
   opportunities: number;
   syncedAt: string;
@@ -20,26 +26,25 @@ export type SyncResult = {
 
 export async function syncSeoOpportunities(): Promise<SyncResult> {
   const t0 = Date.now();
-  const log = (msg: string) => console.error(`[seo-sync +${((Date.now() - t0) / 1000).toFixed(1)}s] ${msg}`);
-
-  log("starting export…");
-  const { pages, opportunities } = await runOpportunityExport();
-  log(`export complete: ${pages.length} pages, ${opportunities.length} opportunities`);
+  const { jobId } = await createSyncJob({ trigger: "cron" });
+  await runSyncJob(jobId);
 
   const supabase = getServiceClient();
-  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("cp_seo_sync_jobs")
+    .select("pages_processed, opportunities_total, completed_at")
+    .eq("id", jobId)
+    .single();
+  if (error) throw new Error(`syncSeoOpportunities: ${error.message}`);
 
-  // One server-side RPC does it all atomically — much faster than 4 PostgREST
-  // round-trips and avoids per-table schema-cache cold starts.
-  log("syncing to DB (single RPC)…");
-  const { data, error } = await supabase.rpc("cp_seo_sync_all", {
-    pages_data: pages,
-    opps_data: opportunities,
-    sync_at: now,
-  });
-  if (error) throw new Error(`sync_all: ${error.message}`);
+  console.error(
+    `[seo-sync] job=${jobId} done in ${((Date.now() - t0) / 1000).toFixed(1)}s — ${data?.pages_processed ?? 0} pages, ${data?.opportunities_total ?? 0} opportunities`,
+  );
 
-  const summary = data as { pages: number; opportunities: number; archived: number };
-  log(`done in ${((Date.now() - t0) / 1000).toFixed(1)}s — archived ${summary.archived} stale rows`);
-  return { pages: summary.pages, opportunities: summary.opportunities, syncedAt: now };
+  return {
+    jobId,
+    pages: data?.pages_processed ?? 0,
+    opportunities: data?.opportunities_total ?? 0,
+    syncedAt: data?.completed_at ?? new Date().toISOString(),
+  };
 }

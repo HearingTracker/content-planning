@@ -6,7 +6,7 @@
 import { fetchGSCRows } from "./gsc";
 import { fetchEarnings, type PageEarnings } from "./earnings";
 import { fetchAllPageMetas } from "./storyblok";
-import { loadAhrefs } from "./ahrefs";
+import { loadKeywordData } from "./keyword-data";
 import {
   classifyKeyword,
   expectedCtr,
@@ -51,9 +51,16 @@ export type RunOptions = {
   minPosition?: number;   // default 4
   maxPosition?: number;   // default 15
   minImpressions?: number;// default 50
-  topPerPage?: number;    // default 10
+  topPerPage?: number;    // default 10. Set to 0/null via includeAllForClustering to disable cap.
   country?: string;       // default 'us' (Ahrefs)
   includePrimary?: boolean; // default false (skip head terms)
+  /**
+   * Phase 1A clustering mode: returns every striking-distance keyword on
+   * revenue pages with full classification + Ahrefs enrichment, with no
+   * primary filter and no per-page cap. Caller is responsible for the
+   * downstream cluster-level capping.
+   */
+  includeAllForClustering?: boolean;
 };
 
 function pathOf(url: string): string {
@@ -70,6 +77,7 @@ const fmt = (d: Date) => d.toISOString().slice(0, 10);
 export async function runOpportunityExport(opts: RunOptions = {}): Promise<{
   pages: SeoPageRow[];
   opportunities: SeoOpportunityRow[];
+  pageMetas: Map<string, PageMeta>;
 }> {
   const t0 = Date.now();
   const log = (msg: string) => console.error(`[seo-run +${((Date.now() - t0) / 1000).toFixed(1)}s] ${msg}`);
@@ -80,9 +88,10 @@ export async function runOpportunityExport(opts: RunOptions = {}): Promise<{
   const minPos = opts.minPosition ?? 4;
   const maxPos = opts.maxPosition ?? 15;
   const minImp = opts.minImpressions ?? 50;
-  const topPerPage = opts.topPerPage ?? 10;
+  const includeAllForClustering = opts.includeAllForClustering ?? false;
+  const topPerPage = includeAllForClustering ? null : (opts.topPerPage ?? 10);
   const country = opts.country ?? "us";
-  const includePrimary = opts.includePrimary ?? false;
+  const includePrimary = includeAllForClustering ? true : (opts.includePrimary ?? false);
 
   // 1. GSC striking-distance keywords
   const end = new Date(); end.setDate(end.getDate() - 3); // 3-day lag
@@ -140,15 +149,33 @@ export async function runOpportunityExport(opts: RunOptions = {}): Promise<{
   const counts = classified.reduce((m: Record<string, number>, r) => { m[r.kind] = (m[r.kind] ?? 0) + 1; return m; }, {});
   log(`keyword breakdown: ${JSON.stringify(counts)}`);
 
-  // 5. Ahrefs KD only for kept keywords
-  const kwUniverse = [...new Set(candidates.map((r) => r.query))];
-  log(`fetching Ahrefs KD for ${kwUniverse.length} keywords…`);
-  const kdMap = await loadAhrefs(kwUniverse, country);
-  log(`Ahrefs done (${kdMap.size}/${kwUniverse.length} hits)`);
+  // 5. Per-keyword KD/volume/intents/SERP features for kept keywords (DataForSEO,
+  //    cached). traffic_potential isn't returned by this provider.
+  // SEO_DEV_KEYWORD_LIMIT caps the keyword universe in dev to bound API spend.
+  // We keep the top-N by impressions so clusters remain meaningful.
+  const impByQuery = candidates.reduce((m: Map<string, number>, r) => {
+    m.set(r.query, (m.get(r.query) ?? 0) + r.impressions);
+    return m;
+  }, new Map<string, number>());
+  let kwUniverse = [...impByQuery.keys()].sort((a, b) => (impByQuery.get(b)! - impByQuery.get(a)!));
+  const devLimit = Number(process.env.SEO_DEV_KEYWORD_LIMIT ?? 0);
+  if (devLimit > 0 && kwUniverse.length > devLimit) {
+    log(`SEO_DEV_KEYWORD_LIMIT=${devLimit}: capping ${kwUniverse.length} → ${devLimit} keywords (top by impressions)`);
+    kwUniverse = kwUniverse.slice(0, devLimit);
+  }
+  log(`fetching keyword data for ${kwUniverse.length} keywords…`);
+  const kdMap = await loadKeywordData(kwUniverse, country);
+  log(`keyword data done (${kdMap.size}/${kwUniverse.length} hits)`);
 
-  // 6. Build per-page rows, sorted by score
+  // 6. Build per-page rows, sorted by score. When the dev cap is in effect we
+  //    also drop candidates outside the kept set so embeddings/LLM calls
+  //    downstream don't pay full price either.
+  const keptQueries = new Set(kwUniverse);
+  const keptCandidates = devLimit > 0
+    ? candidates.filter((r) => keptQueries.has(r.query))
+    : candidates;
   const byPage = new Map<string, SeoOpportunityRow[]>();
-  for (const r of candidates) {
+  for (const r of keptCandidates) {
     const kd = kdMap.get(r.query);
     const opp: SeoOpportunityRow = {
       page: r.path,
@@ -162,7 +189,7 @@ export async function runOpportunityExport(opts: RunOptions = {}): Promise<{
       expected_ctr_pct: Math.round(expectedCtr(r.position) * 10000) / 100,
       kd: kd?.difficulty ?? null,
       volume: kd?.volume ?? null,
-      traffic_potential: kd?.traffic_potential ?? null,
+      traffic_potential: null,
       parent_topic: kd?.parent_topic ?? null,
       intents: kd?.intents
         ? Object.keys(kd.intents).filter((k) => kd.intents![k]).join("|")
@@ -182,7 +209,11 @@ export async function runOpportunityExport(opts: RunOptions = {}): Promise<{
   const opportunities: SeoOpportunityRow[] = [];
   for (const list of byPage.values()) {
     list.sort((a, b) => b.score - a.score);
-    opportunities.push(...list.slice(0, topPerPage));
+    if (topPerPage == null) {
+      opportunities.push(...list);
+    } else {
+      opportunities.push(...list.slice(0, topPerPage));
+    }
   }
 
   // 7. Page summaries for cp_seo_pages
@@ -199,5 +230,5 @@ export async function runOpportunityExport(opts: RunOptions = {}): Promise<{
     });
   }
 
-  return { pages, opportunities };
+  return { pages, opportunities, pageMetas };
 }

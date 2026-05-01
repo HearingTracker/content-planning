@@ -22,5 +22,7 @@ export {
   useUpdateOpportunityStatus,
   useAssignOpportunity,
   useUpdateOpportunityNotes,
-  useRefreshSeoNow,
+  useTriggerSyncJob,
+  useActiveSyncJob,
+  useSyncJob,
 } from "./use-seo";

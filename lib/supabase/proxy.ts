@@ -22,7 +22,7 @@ export async function updateSession(request: NextRequest) {
 
   // Skip auth checks entirely for auth-related routes
   // This is critical for PKCE flow to work correctly
-  if (isAuthRoute(request.nextUrl.pathname) || request.nextUrl.pathname === "/") {
+  if (isAuthRoute(request.nextUrl.pathname)) {
     return supabaseResponse;
   }
 
