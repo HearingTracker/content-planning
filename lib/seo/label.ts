@@ -116,14 +116,15 @@ export async function labelCluster(input: LabelInput): Promise<LabelResult> {
 
 /**
  * Concurrency-controlled bulk label runner. Phase 1A typically labels ~20–80
- * clusters per sync; concurrency=5 keeps latency reasonable without flooding
- * the provider. Returns results in the same order as input.
+ * clusters per sync. Concurrency=2 keeps us under Anthropic Tier 1's 50 RPM
+ * org-wide cap when label and coverage both run in the same sync; raise once
+ * on Tier 2+.
  */
 export async function labelClustersConcurrently(
   inputs: LabelInput[],
   opts: { concurrency?: number; onResult?: (i: number, r: LabelResult) => void } = {},
 ): Promise<LabelResult[]> {
-  const concurrency = Math.max(1, opts.concurrency ?? 5);
+  const concurrency = Math.max(1, opts.concurrency ?? 2);
   const results: LabelResult[] = new Array(inputs.length);
   let next = 0;
 
