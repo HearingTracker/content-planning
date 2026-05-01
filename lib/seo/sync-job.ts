@@ -204,7 +204,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
     }));
     let done = 0;
     const labels = await labelClustersConcurrently(labelInputs, {
-      concurrency: 5,
+      concurrency: 10,
       onResult: (i, r) => {
         llmIn += r.tokens.input;
         llmOut += r.tokens.output;
@@ -237,7 +237,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
     let coverageEmitted: CoverageResult[] = [];
     if (coverageInputs.length > 0) {
       coverageEmitted = await classifyClustersConcurrently(coverageInputs, {
-        concurrency: 2,
+        concurrency: 10,
         onResult: (_i, r) => {
           llmIn += r.tokens.input;
           llmOut += r.tokens.output;

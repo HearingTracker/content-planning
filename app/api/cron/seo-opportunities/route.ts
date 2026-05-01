@@ -6,7 +6,7 @@
 import { NextResponse } from "next/server";
 import { syncSeoOpportunities } from "@/lib/seo/sync";
 
-export const maxDuration = 300; // ~2min run, with headroom
+export const maxDuration = 800; // Phase 1A+1B can take 6–10min on full prod data
 
 function authorized(req: Request): boolean {
   const secret = process.env.CRON_SECRET;
