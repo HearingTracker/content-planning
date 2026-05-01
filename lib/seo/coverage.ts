@@ -297,11 +297,13 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     `- cannibalization: ${cannibalMemberCount > 0 ? `${cannibalMemberCount} member(s) ALSO rank on other pages — see member lines` : "none detected"}`,
   );
 
+  // 60s per-call cap so a single hung request can't block the whole phase.
   const result = await generateObject({
     model: anthropic(modelId),
     schema: CoverageSchema,
     system: SYSTEM_PROMPT,
     prompt: userParts.join("\n"),
+    abortSignal: AbortSignal.timeout(60_000),
   });
 
   return {
@@ -333,16 +335,16 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
 }
 
 /**
- * Concurrency-controlled bulk classifier. Lower default than label.ts (2 vs 5)
- * because each prompt carries the page body (~1k tokens) plus member queries
- * and competing pages — at concurrency 5 the burst overruns Haiku's 50k
- * input-tokens-per-minute org limit on first-tier accounts.
+ * Concurrency-controlled bulk classifier. Each prompt carries the page body
+ * (~1k tokens) plus member queries and competing pages. Default 5 is sized for
+ * Anthropic Tier 2+ (450k ITPM headroom); drop to 2 if you fall back to Tier 1
+ * (50k ITPM) — at 5 the burst overruns the Tier 1 cap.
  */
 export async function classifyClustersConcurrently(
   inputs: CoverageInput[],
   opts: { concurrency?: number; onResult?: (i: number, r: CoverageResult) => void } = {},
 ): Promise<CoverageResult[]> {
-  const concurrency = Math.max(1, opts.concurrency ?? 2);
+  const concurrency = Math.max(1, opts.concurrency ?? 5);
   const results: CoverageResult[] = new Array(inputs.length);
   let next = 0;
 
@@ -350,9 +352,45 @@ export async function classifyClustersConcurrently(
     while (true) {
       const i = next++;
       if (i >= inputs.length) return;
-      const r = await classifyClusterCoverage(inputs[i]);
-      results[i] = r;
-      opts.onResult?.(i, r);
+      const input = inputs[i];
+      try {
+        const r = await classifyClusterCoverage(input);
+        results[i] = r;
+        opts.onResult?.(i, r);
+      } catch (err) {
+        // Fail-soft: a single timeout/schema-reject/transient error shouldn't
+        // abort the whole phase. Mark this cluster needs_review so an admin can
+        // re-classify it later, and let the rest of the batch finish.
+        const message = err instanceof Error ? err.message : String(err);
+        const fallback: CoverageResult = {
+          kind: "needs_review",
+          recommendation: `Classification failed: ${message.slice(0, 200)}`,
+          confidence: 0,
+          modelId: resolveModelId(),
+          promptVersion: COVERAGE_PROMPT_VERSION,
+          audit: {
+            prompt_version: COVERAGE_PROMPT_VERSION,
+            page: input.page,
+            cluster_label: input.clusterLabel,
+            canonical_query: input.canonicalQuery,
+            member_count: input.members.length,
+            body_chars_seen: 0,
+            body_truncated: false,
+            heading_count: input.headings.length,
+            avg_position: input.avgPosition,
+            weighted_ctr_pct: input.weightedCtrPct,
+            expected_ctr_pct: input.expectedCtrPct,
+            anchor_queries: input.anchors.map((a) => a.query),
+            cannibal_member_count: input.members.filter(
+              (m) => (m.competing_pages?.length ?? 0) > 0,
+            ).length,
+            error: message,
+          },
+          tokens: { input: 0, output: 0 },
+        };
+        results[i] = fallback;
+        opts.onResult?.(i, fallback);
+      }
     }
   }
 
