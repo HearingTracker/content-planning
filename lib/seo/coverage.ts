@@ -22,7 +22,10 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import type { Heading } from "./classify";
 
-export const COVERAGE_KINDS = [
+// Kinds the LLM is allowed to emit. needs_review is the system-emitted
+// fallback (e.g. when classification times out / fails) and is intentionally
+// excluded from the LLM enum.
+export const COVERAGE_KINDS_LLM = [
   "coverage_strong",
   "coverage_partial",
   "intent_gap",
@@ -31,10 +34,11 @@ export const COVERAGE_KINDS = [
   "consolidate",
   "cede",
 ] as const;
+export const COVERAGE_KINDS = [...COVERAGE_KINDS_LLM, "needs_review"] as const;
 export type CoverageKind = (typeof COVERAGE_KINDS)[number];
 
 const CoverageSchema = z.object({
-  kind: z.enum(COVERAGE_KINDS).describe(
+  kind: z.enum(COVERAGE_KINDS_LLM).describe(
     [
       "coverage_strong: the page already answers what the queries are asking. Just monitor.",
       "coverage_partial: the page touches the topic but doesn't fully answer the cluster's intent. Extend the page.",
@@ -224,6 +228,7 @@ export type CoverageResult = {
     expected_ctr_pct: number | null;
     anchor_queries: string[];
     cannibal_member_count: number;
+    error?: string;
   };
   tokens: { input: number; output: number };
 };
