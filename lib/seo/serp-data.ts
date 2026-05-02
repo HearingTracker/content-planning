@@ -167,6 +167,10 @@ function rowToSerp(r: CacheRow): SerpData {
 export async function loadSerps(
   keywords: string[],
   country = "us",
+  opts: {
+    onCacheRead?: (cached: number, misses: number) => void;
+    onFetchProgress?: (completed: number, total: number) => void;
+  } = {},
 ): Promise<Map<string, SerpData>> {
   const out = new Map<string, SerpData>();
   if (keywords.length === 0) return out;
@@ -195,11 +199,13 @@ export async function loadSerps(
   }
 
   const misses = dedupedKeywords.filter((k) => !out.has(k));
+  opts.onCacheRead?.(out.size, misses.length);
   if (misses.length === 0) return out;
 
   // 2. Fetch misses with a small concurrency pool. DataForSEO's live endpoint
   //    only allows one task per request, so each miss is its own HTTP call.
   let next = 0;
+  let completed = 0;
   const fresh: SerpData[] = [];
   async function worker() {
     while (true) {
@@ -216,6 +222,8 @@ export async function loadSerps(
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[serp-data] fetch failed for "${kw}": ${msg}`);
       }
+      completed++;
+      opts.onFetchProgress?.(completed, misses.length);
     }
   }
   await Promise.all(

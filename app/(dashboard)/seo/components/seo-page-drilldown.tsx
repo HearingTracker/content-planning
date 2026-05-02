@@ -20,10 +20,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { AlertTriangle, CornerUpRight, ExternalLink, Info, Sparkles } from "lucide-react";
-import { Fragment, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useSeoOpportunities, useSynthesisFindingsForPage } from "@/hooks/queries";
 import { StatusSelect } from "./status-select";
-import { getKindMeta, getSynthesisKindMeta } from "./kind-meta";
+import { getKindMeta, getSynthesisKindMeta, type SynthesisKindMeta } from "./kind-meta";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import type { SeoOpportunity, SeoPage, SeoSynthesisFinding } from "../types";
 
@@ -167,6 +168,22 @@ export function SeoPageDrilldown({
 //   • "Targets this page" — the page is target_page (e.g. orphan_target
 //     suggesting we extend this page to claim a topic)
 
+// Tone severity for ordering tabs — most-urgent (rose) first, slate last.
+// Mirrors the visual reading order an editor scans top-down.
+const TONE_RANK: Record<string, number> = {
+  rose: 0,
+  amber: 1,
+  blue: 2,
+  emerald: 3,
+  slate: 4,
+};
+
+const SYNTHESIS_GROUP_VISIBLE_CAP = 5;
+
+type SynthesisFindingWithPlacement = SeoSynthesisFinding & {
+  placement: "on_page" | "target";
+};
+
 function SiteWideContextCallout({
   currentPage,
   findings,
@@ -174,10 +191,47 @@ function SiteWideContextCallout({
   currentPage: string;
   findings: SeoSynthesisFinding[];
 }) {
-  const onPage = findings.filter((f) => f.scope_page === currentPage);
-  const targets = findings.filter(
-    (f) => f.scope_page !== currentPage && f.target_page === currentPage,
+  const tagged = useMemo<SynthesisFindingWithPlacement[]>(() => {
+    return findings
+      .map((f): SynthesisFindingWithPlacement | null => {
+        if (f.scope_page === currentPage) return { ...f, placement: "on_page" };
+        if (f.target_page === currentPage) return { ...f, placement: "target" };
+        return null;
+      })
+      .filter((f): f is SynthesisFindingWithPlacement => f !== null);
+  }, [findings, currentPage]);
+
+  // Group by kind — each tab is one kind. Sort tabs by tone severity (rose
+  // → amber → blue → slate) so the editor's first read is the most urgent.
+  const sortedGroups = useMemo(() => {
+    const byKind = new Map<string, SynthesisFindingWithPlacement[]>();
+    for (const f of tagged) {
+      const list = byKind.get(f.kind) ?? [];
+      list.push(f);
+      byKind.set(f.kind, list);
+    }
+    return Array.from(byKind.entries())
+      .map(([kind, items]) => ({ kind, items, meta: getSynthesisKindMeta(kind) }))
+      .filter(
+        (g): g is { kind: string; items: SynthesisFindingWithPlacement[]; meta: SynthesisKindMeta } =>
+          g.meta !== null,
+      )
+      .sort((a, b) => {
+        const aRank = toneRankForMeta(a.meta);
+        const bRank = toneRankForMeta(b.meta);
+        if (aRank !== bRank) return aRank - bRank;
+        return b.items.length - a.items.length;
+      });
+  }, [tagged]);
+
+  const [activeKind, setActiveKind] = useState<string | null>(
+    sortedGroups[0]?.kind ?? null,
   );
+
+  if (sortedGroups.length === 0) return null;
+
+  // Guard against the active tab disappearing after a re-sync.
+  const active = sortedGroups.find((g) => g.kind === activeKind) ?? sortedGroups[0];
 
   return (
     <div className="rounded-lg border border-indigo-200/70 bg-gradient-to-br from-indigo-50/80 via-white to-white px-4 py-3.5 shadow-sm">
@@ -189,79 +243,116 @@ function SiteWideContextCallout({
         Cross-page findings the per-cluster classifier cannot see on its own.
       </p>
 
-      {onPage.length > 0 && (
-        <SynthesisGroup
-          title="On this page"
-          findings={onPage}
-          renderDetail={(f) => detailForOnPage(f)}
-        />
-      )}
-      {targets.length > 0 && (
-        <SynthesisGroup
-          title="Targets this page"
-          findings={targets}
-          renderDetail={(f) => detailForTarget(f)}
-        />
-      )}
+      <Tabs
+        value={active.kind}
+        onValueChange={setActiveKind}
+        className="mt-3 gap-3"
+      >
+        <TabsList className="bg-white/70 ring-1 ring-inset ring-indigo-100 h-auto flex-wrap gap-1 p-1">
+          {sortedGroups.map(({ kind, meta, items }) => {
+            const { Icon } = meta;
+            return (
+              <TabsTrigger
+                key={kind}
+                value={kind}
+                className="data-[state=active]:bg-background h-7 px-2.5 text-[11px] font-medium gap-1.5"
+              >
+                <Icon className="h-3 w-3" />
+                {meta.shortLabel}
+                <span className="rounded bg-zinc-100 px-1 py-px text-[10px] tabular-nums text-zinc-700 ring-1 ring-inset ring-zinc-200">
+                  {items.length}
+                </span>
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+
+        {sortedGroups.map(({ kind, items, meta }) => (
+          <TabsContent key={kind} value={kind} className="mt-0">
+            <SynthesisKindList items={items} meta={meta} />
+          </TabsContent>
+        ))}
+      </Tabs>
     </div>
   );
 }
 
-function SynthesisGroup({
-  title,
-  findings,
-  renderDetail,
+// meta.tone is a class-string bundle, not a tone-name. Re-derive the tone
+// name by sniffing the chip class so we can sort tabs by severity.
+function toneRankForMeta(meta: SynthesisKindMeta): number {
+  const chip = meta.tone.chip;
+  if (chip.includes("rose")) return TONE_RANK.rose;
+  if (chip.includes("amber")) return TONE_RANK.amber;
+  if (chip.includes("blue")) return TONE_RANK.blue;
+  if (chip.includes("emerald")) return TONE_RANK.emerald;
+  return TONE_RANK.slate;
+}
+
+function SynthesisKindList({
+  items,
+  meta,
 }: {
-  title: string;
-  findings: SeoSynthesisFinding[];
-  renderDetail: (f: SeoSynthesisFinding) => string;
+  items: SynthesisFindingWithPlacement[];
+  meta: SynthesisKindMeta;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? items : items.slice(0, SYNTHESIS_GROUP_VISIBLE_CAP);
+  const hidden = items.length - visible.length;
+  const { Icon } = meta;
+
   return (
-    <div className="mt-3">
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-        {title}
-      </div>
-      <ul className="mt-1.5 space-y-1.5">
-        {findings.map((f) => {
-          const meta = getSynthesisKindMeta(f.kind);
-          if (!meta) return null;
-          const { Icon } = meta;
-          return (
-            <li
-              key={f.id}
-              className="flex items-start gap-2 rounded-md bg-background/80 px-2.5 py-2 ring-1 ring-inset ring-zinc-200/70"
-            >
-              <span
-                className={cn(
-                  "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
-                  meta.tone.iconWrap,
-                )}
-              >
-                <Icon className="h-3.5 w-3.5" />
+    <ul className="space-y-1.5">
+      {visible.map((f) => (
+        <li
+          key={f.id}
+          className="flex items-start gap-2 rounded-md bg-background/80 px-2.5 py-2 ring-1 ring-inset ring-zinc-200/70"
+        >
+          <span
+            className={cn(
+              "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+              meta.tone.iconWrap,
+            )}
+          >
+            <Icon className="h-3.5 w-3.5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {f.placement === "on_page" ? "On this page" : "Targets this page"}
               </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={cn(
-                      "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium",
-                      meta.tone.chip,
-                    )}
-                  >
-                    {meta.shortLabel}
-                  </span>
-                  <span className="text-[12px] font-medium text-foreground truncate">
-                    {f.scope_query ?? f.scope_page ?? ""}
-                  </span>
-                </div>
-                <p className="mt-0.5 text-[11.5px] text-muted-foreground leading-snug">
-                  {renderDetail(f)}
-                </p>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
+              <span className="text-[12px] font-medium text-foreground truncate">
+                {f.scope_query ?? f.scope_page ?? ""}
+              </span>
+            </div>
+            <p className="mt-0.5 text-[11.5px] text-muted-foreground leading-snug">
+              {f.placement === "on_page" ? detailForOnPage(f) : detailForTarget(f)}
+            </p>
+          </div>
+        </li>
+      ))}
+      {hidden > 0 && (
+        <li>
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="rounded-full bg-white px-2.5 py-1 text-[11px] text-zinc-700 ring-1 ring-inset ring-zinc-300 hover:bg-zinc-50"
+          >
+            +{hidden} more
+          </button>
+        </li>
+      )}
+      {expanded && items.length > SYNTHESIS_GROUP_VISIBLE_CAP && (
+        <li>
+          <button
+            type="button"
+            onClick={() => setExpanded(false)}
+            className="rounded-full bg-white px-2.5 py-1 text-[11px] text-zinc-700 ring-1 ring-inset ring-zinc-300 hover:bg-zinc-50"
+          >
+            show less
+          </button>
+        </li>
+      )}
+    </ul>
   );
 }
 
@@ -780,18 +871,27 @@ const TIER_RANK: Record<CoverageTier, number> = {
   covered: 3,
 };
 
+const QUERY_CHIPS_VISIBLE_CAP = 5;
+
 /**
- * Anchors first (in classifier priority order), then non-anchors sorted by
- * coverage tier ascending (missing → marginal → unknown → covered), with
- * within-tier ties broken by raw score ascending (most-missing first).
+ * Cede chips (canonical-owned) first — those flag a sibling page already
+ * winning the SERP, so they're the editor's most urgent look. Then anchors
+ * in classifier priority order, then by coverage tier ascending (missing →
+ * marginal → unknown → covered), with within-tier ties broken by raw score
+ * ascending (most-missing first).
  */
 function sortQueriesByPriority(
   all: string[],
   anchors: string[],
+  externalCanonicals: Record<string, { url: string; position: number | null }>,
   topicCoverage: Record<string, number | null>,
 ): string[] {
   const anchorOrder = new Map(anchors.map((q, i) => [q, i] as const));
   return [...all].sort((a, b) => {
+    const aCede = a in externalCanonicals;
+    const bCede = b in externalCanonicals;
+    if (aCede && !bCede) return -1;
+    if (!aCede && bCede) return 1;
     const aAnchor = anchorOrder.get(a);
     const bAnchor = anchorOrder.get(b);
     if (aAnchor != null && bAnchor == null) return -1;
@@ -816,18 +916,8 @@ function QueryChipsBlock({
   topicCoverage: Record<string, number | null>;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const sorted = sortQueriesByPriority(queries, anchors, topicCoverage);
-  // Visibility rule: anchors always visible (LLM-curated relevance),
-  // non-anchors visible only when they need coverage. Well-covered
-  // non-anchors collapse into "+N more" — they're useful as confirmation
-  // the page covers the cluster, but they're not the editor's work.
-  const anchorSet = new Set(anchors);
-  const naturallyVisible = sorted.filter((q) => {
-    if (anchorSet.has(q)) return true;
-    if (externalCanonicals[q]) return true;
-    return coverageTier(topicCoverage[q]) !== "covered";
-  });
-  const visible = expanded ? sorted : naturallyVisible;
+  const sorted = sortQueriesByPriority(queries, anchors, externalCanonicals, topicCoverage);
+  const visible = expanded ? sorted : sorted.slice(0, QUERY_CHIPS_VISIBLE_CAP);
   const hidden = sorted.length - visible.length;
 
   return (
@@ -921,10 +1011,10 @@ function QueryChipsBlock({
             onClick={() => setExpanded(true)}
             className="rounded-full bg-white px-2 py-0.5 text-[11px] text-zinc-700 ring-1 ring-inset ring-zinc-300 hover:bg-zinc-50"
           >
-            +{hidden} already covered
+            +{hidden} more
           </button>
         )}
-        {expanded && naturallyVisible.length < sorted.length && (
+        {expanded && sorted.length > QUERY_CHIPS_VISIBLE_CAP && (
           <button
             type="button"
             onClick={() => setExpanded(false)}

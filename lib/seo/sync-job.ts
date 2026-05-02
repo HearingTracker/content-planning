@@ -266,8 +266,23 @@ export async function runSyncJob(jobId: number): Promise<void> {
       .map(([q]) => q);
     const anchorQueriesAcrossClusters = collectAnchorQueries(flatCandidates);
     const serpsToFetch = [...new Set([...multiPageQueries, ...anchorQueriesAcrossClusters])];
+    await reporter.log(
+      `Fetching SERPs — ${serpsToFetch.length} unique queries (${multiPageQueries.length} multi-page + ${anchorQueriesAcrossClusters.length} anchor)…`,
+    );
+    let lastSerpProgressLogged = 0;
     const serpDataByQuery = serpsToFetch.length > 0
-      ? await loadSerps(serpsToFetch, "us")
+      ? await loadSerps(serpsToFetch, "us", {
+          onCacheRead: (cached, misses) =>
+            void reporter.log(`SERP cache — ${cached} hits, ${misses} to fetch live`),
+          onFetchProgress: (completed, total) => {
+            // Throttle to roughly every 10% so we don't flood log_tail.
+            const step = Math.max(10, Math.ceil(total / 10));
+            if (completed - lastSerpProgressLogged >= step || completed === total) {
+              lastSerpProgressLogged = completed;
+              void reporter.log(`SERP fetch progress — ${completed}/${total}`);
+            }
+          },
+        })
       : new Map<string, SerpData>();
     await reporter.log(
       `SERP fetch — ${multiPageQueries.length} multi-page + ${anchorQueriesAcrossClusters.length} anchor queries (${serpsToFetch.length} unique), ${serpDataByQuery.size} SERPs available`,
@@ -282,6 +297,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
     // the classifier can distinguish "exact phrase missing" from "topic
     // missing". Without this, /best-hearing-aids gets told to "add a pricing
     // section" even though it has an H2 "How much do hearing aids cost?".
+    await reporter.log(`Embedding page sections — ${pageMetas.size} pages…`);
     const sectionEmb = await embedPageSections(pageMetas);
     embedTokens += sectionEmb.tokens;
     await reporter.log(
