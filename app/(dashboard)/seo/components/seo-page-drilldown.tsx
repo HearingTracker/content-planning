@@ -19,13 +19,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { AlertTriangle, ExternalLink, Info, Sparkles } from "lucide-react";
+import { AlertTriangle, CornerUpRight, ExternalLink, Info, Sparkles } from "lucide-react";
 import { Fragment, useState } from "react";
-import { useSeoOpportunities } from "@/hooks/queries";
+import { useSeoOpportunities, useSynthesisFindingsForPage } from "@/hooks/queries";
 import { StatusSelect } from "./status-select";
-import { getKindMeta } from "./kind-meta";
+import { getKindMeta, getSynthesisKindMeta } from "./kind-meta";
 import { cn } from "@/lib/utils";
-import type { SeoOpportunity, SeoPage } from "../types";
+import type { SeoOpportunity, SeoPage, SeoSynthesisFinding } from "../types";
 
 export function SeoPageDrilldown({
   page,
@@ -37,6 +37,7 @@ export function SeoPageDrilldown({
   onOpenChange: (next: boolean) => void;
 }) {
   const { data: opps, isLoading } = useSeoOpportunities(page?.page ?? null);
+  const { data: synthesis } = useSynthesisFindingsForPage(page?.page ?? null);
 
   const counts = (opps ?? []).reduce(
     (acc, o) => {
@@ -108,6 +109,12 @@ export function SeoPageDrilldown({
             </SheetHeader>
 
             <div className="space-y-3 px-4 py-5 sm:px-6">
+              {page && (synthesis?.length ?? 0) > 0 && (
+                <SiteWideContextCallout
+                  currentPage={page.page}
+                  findings={synthesis ?? []}
+                />
+              )}
               {isLoading && (
                 <>
                   <Skeleton className="h-40 w-full" />
@@ -126,7 +133,13 @@ export function SeoPageDrilldown({
                 </div>
               )}
               {opps?.map((o, i) => (
-                <ClusterCard key={o.id} opp={o} delay={i * 40} />
+                <ClusterCard
+                  key={o.id}
+                  opp={o}
+                  delay={i * 40}
+                  currentPage={page.page}
+                  siteFindings={synthesis ?? []}
+                />
               ))}
             </div>
           </TooltipProvider>
@@ -134,6 +147,167 @@ export function SeoPageDrilldown({
       </SheetContent>
     </Sheet>
   );
+}
+
+// ─── Site-wide context callout (Phase 1C synthesis layer) ─────────────────
+// Surfaces cross-page findings the per-cluster classifier cannot see.
+// Findings split into two buckets relative to the current page:
+//   • "On this page" — the page is scope_page (e.g. fully_ceded_page)
+//   • "Targets this page" — the page is target_page (e.g. orphan_target
+//     suggesting we extend this page to claim a topic)
+
+function SiteWideContextCallout({
+  currentPage,
+  findings,
+}: {
+  currentPage: string;
+  findings: SeoSynthesisFinding[];
+}) {
+  const onPage = findings.filter((f) => f.scope_page === currentPage);
+  const targets = findings.filter(
+    (f) => f.scope_page !== currentPage && f.target_page === currentPage,
+  );
+
+  return (
+    <div className="rounded-lg border border-indigo-200/70 bg-gradient-to-br from-indigo-50/80 via-white to-white px-4 py-3.5 shadow-sm">
+      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-indigo-700/90">
+        <Sparkles className="h-3.5 w-3.5" />
+        Site-wide context
+      </div>
+      <p className="mt-1 text-[12px] text-foreground/80 leading-snug">
+        Cross-page findings the per-cluster classifier cannot see on its own.
+      </p>
+
+      {onPage.length > 0 && (
+        <SynthesisGroup
+          title="On this page"
+          findings={onPage}
+          renderDetail={(f) => detailForOnPage(f)}
+        />
+      )}
+      {targets.length > 0 && (
+        <SynthesisGroup
+          title="Targets this page"
+          findings={targets}
+          renderDetail={(f) => detailForTarget(f)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SynthesisGroup({
+  title,
+  findings,
+  renderDetail,
+}: {
+  title: string;
+  findings: SeoSynthesisFinding[];
+  renderDetail: (f: SeoSynthesisFinding) => string;
+}) {
+  return (
+    <div className="mt-3">
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        {title}
+      </div>
+      <ul className="mt-1.5 space-y-1.5">
+        {findings.map((f) => {
+          const meta = getSynthesisKindMeta(f.kind);
+          if (!meta) return null;
+          const { Icon } = meta;
+          return (
+            <li
+              key={f.id}
+              className="flex items-start gap-2 rounded-md bg-background/80 px-2.5 py-2 ring-1 ring-inset ring-zinc-200/70"
+            >
+              <span
+                className={cn(
+                  "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+                  meta.tone.iconWrap,
+                )}
+              >
+                <Icon className="h-3.5 w-3.5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                      meta.tone.chip,
+                    )}
+                  >
+                    {meta.shortLabel}
+                  </span>
+                  <span className="text-[12px] font-medium text-foreground truncate">
+                    {f.scope_query ?? f.scope_page ?? ""}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[11.5px] text-muted-foreground leading-snug">
+                  {renderDetail(f)}
+                </p>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function detailForOnPage(f: SeoSynthesisFinding): string {
+  const ev = f.evidence ?? {};
+  if (f.kind === "fully_ceded_page") {
+    const count = (ev as { ceded_anchor_count?: number }).ceded_anchor_count ?? 0;
+    return `${count} anchor${count === 1 ? "" : "s"} on this page already won by other HearingTracker URLs.`;
+  }
+  if (f.kind === "freshness") {
+    const signals = (ev as { signals?: string[] }).signals ?? [];
+    if (signals.length === 0) return "Stale signals detected.";
+    const labels = signals.map((s) => {
+      if (s === "year_in_title") return "outdated year in title";
+      if (s === "content_age") return "content > 365 days old";
+      if (s === "rank_decline") return "rank dropping over 8 weeks";
+      return s;
+    });
+    return `Stale: ${labels.join(", ")}.`;
+  }
+  if (f.kind === "internal_link_gap") {
+    const qcount = (ev as { qualifying_query_count?: number }).qualifying_query_count ?? 0;
+    return `Page ranks top-3 for ${qcount} high-volume quer${qcount === 1 ? "y" : "ies"} but no other HT page links to it. Pour link equity.`;
+  }
+  return getSynthesisKindMeta(f.kind)?.description ?? "";
+}
+
+function detailForTarget(f: SeoSynthesisFinding): string {
+  const ev = f.evidence ?? {};
+  const sv = (ev as { sv?: number }).sv ?? 0;
+  const svLabel = sv > 0 ? `SV ${sv.toLocaleString()}/mo` : "search volume unknown";
+  const authorityCapped = (ev as { is_authority_capped?: boolean }).is_authority_capped === true;
+  const authorityNote = authorityCapped
+    ? " Note: this query's SERP is authority-capped — on-page changes unlikely to move rank."
+    : "";
+  if (f.kind === "orphan_target") {
+    const cluster = (ev as { adjacent_cluster_query?: string }).adjacent_cluster_query;
+    return `${svLabel}; topically adjacent to "${cluster ?? "this page"}". No HT URL ranks in top 30.`;
+  }
+  if (f.kind === "undesignated_topic") {
+    const competing = (ev as { competing_pages?: unknown[] }).competing_pages ?? [];
+    return `${svLabel}; ${competing.length} HT pages compete in pos 11-30 with no HT in top 10. This page is the leading candidate.${authorityNote}`;
+  }
+  if (f.kind === "aio_no_citation") {
+    return `${svLabel}; AI Overview present but no HT URL cited. Passage-level rewrite candidate.${authorityNote}`;
+  }
+  if (f.kind === "authority_capped_serp") {
+    const count = (ev as { authority_domain_count?: number }).authority_domain_count ?? 0;
+    const topN = (ev as { top_n_checked?: number }).top_n_checked ?? 5;
+    return `${svLabel}; ${count}/${topN} top results from authority domains. Rank ceiling here is link authority, not on-page.`;
+  }
+  if (f.kind === "brand_cannibalization") {
+    const brand = (ev as { brand?: string }).brand ?? "this brand";
+    const competing = (ev as { competing_pages?: unknown[] }).competing_pages ?? [];
+    return `Brand "${brand}"; ${svLabel}; ${competing.length} HT pages compete pos 11-30. This page is the brand-canonical winner.${authorityNote}`;
+  }
+  return getSynthesisKindMeta(f.kind)?.description ?? "";
 }
 
 function Stat({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
@@ -154,9 +328,46 @@ function Stat({ label, value, mono }: { label: string; value: string; mono?: boo
 
 // ─── Cluster card ──────────────────────────────────────────────────────────
 
-function ClusterCard({ opp: o, delay }: { opp: SeoOpportunity; delay: number }) {
+// Anchor set for badge intersection. Prefer start_with (LLM-curated subset
+// of anchors worth attacking now); when start_with is empty (LLM said
+// "nothing to attack"), still surface findings on the deterministic anchors
+// so the editor sees WHY the LLM excluded them.
+function clusterAnchorQuerySet(o: SeoOpportunity): Set<string> {
+  const source = o.start_with_queries.length > 0 ? o.start_with_queries : o.anchor_queries;
+  return new Set(source);
+}
+
+// Site-wide findings whose scope_query overlaps with a cluster anchor.
+// Restricted to the kinds whose mechanic conflicts with on-page rewrite
+// recommendations: SERP-structural caps (authority), AIO suppression, or a
+// different HT page being the canonical brand winner.
+const ANCHOR_OVERLAP_KINDS = new Set<string>([
+  "authority_capped_serp",
+  "aio_no_citation",
+  "brand_cannibalization",
+]);
+
+function ClusterCard({
+  opp: o,
+  delay,
+  currentPage,
+  siteFindings,
+}: {
+  opp: SeoOpportunity;
+  delay: number;
+  currentPage: string;
+  siteFindings: SeoSynthesisFinding[];
+}) {
   const meta = getKindMeta(o.kind);
   const { Icon } = meta;
+
+  const anchorSet = clusterAnchorQuerySet(o);
+  const anchorFindings = siteFindings.filter(
+    (f) =>
+      f.scope_query != null
+      && anchorSet.has(f.scope_query)
+      && ANCHOR_OVERLAP_KINDS.has(f.kind),
+  );
 
   const avgPos = o.avg_position != null ? Number(o.avg_position) : null;
   const totalImp = Number(o.total_impressions ?? 0);
@@ -228,11 +439,22 @@ function ClusterCard({ opp: o, delay }: { opp: SeoOpportunity; delay: number }) 
         </div>
       </header>
 
-      {/* Member queries — anchors pinned, rest collapsed past a soft cap. */}
+      {/* Member queries — start_with anchors pinned & highlighted, rest
+          collapsed past a soft cap. start_with is the LLM-curated subset
+          that excludes already-covered + ceded anchors. */}
       {o.member_queries.length > 0 && (
         <QueryChipsBlock
           queries={o.member_queries}
-          anchors={o.anchor_queries}
+          anchors={o.start_with_queries}
+          externalCanonicals={o.external_canonicals}
+          topicCoverage={o.topic_coverage_by_query}
+        />
+      )}
+
+      {anchorFindings.length > 0 && (
+        <ClusterFindingsBadgeRow
+          findings={anchorFindings}
+          currentPage={currentPage}
         />
       )}
 
@@ -332,6 +554,66 @@ function ClusterCard({ opp: o, delay }: { opp: SeoOpportunity; delay: number }) 
   );
 }
 
+// Compact "heads up" row tying cluster anchors to site-wide synthesis
+// findings. Sits above the cluster's recommendation prose so the editor
+// reads the prose with the SERP-structural caveats already in mind. When
+// the finding's canonical target is a different HT page, the chip shows
+// "→ /that-page" — that's the cross-page mismatch the per-cluster
+// classifier could not see when it wrote its prose.
+function ClusterFindingsBadgeRow({
+  findings,
+  currentPage,
+}: {
+  findings: SeoSynthesisFinding[];
+  currentPage: string;
+}) {
+  return (
+    <div className="mx-5 mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
+      <span className="text-muted-foreground text-[10px] uppercase tracking-wider">
+        Heads up
+      </span>
+      {findings.map((f) => {
+        const meta = getSynthesisKindMeta(f.kind);
+        if (!meta) return null;
+        const { Icon } = meta;
+        const elsewhereTarget =
+          f.target_page && f.target_page !== currentPage ? f.target_page : null;
+        return (
+          <Tooltip key={f.id}>
+            <TooltipTrigger asChild>
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] cursor-help",
+                  meta.tone.chip,
+                )}
+              >
+                <Icon className="h-3 w-3 shrink-0" />
+                <span className="font-semibold uppercase tracking-wider text-[10px]">
+                  {meta.shortLabel}
+                </span>
+                <span className="opacity-90 truncate max-w-[14rem]">
+                  &ldquo;{f.scope_query}&rdquo;
+                </span>
+                {elsewhereTarget && (
+                  <span className="font-mono opacity-75 truncate max-w-[14rem]">
+                    → {elsewhereTarget}
+                  </span>
+                )}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-xs">
+              {meta.description}
+              {elsewhereTarget
+                ? ` Synthesis recommends ${elsewhereTarget} as the canonical target — don't double-target this anchor here.`
+                : " See “Site-wide context” above for details."}
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Small UI bits ──────────────────────────────────────────────────────────
 
 function PositionPill({ position }: { position: number }) {
@@ -408,26 +690,86 @@ function BrandTag({ brand }: { brand: string }) {
 
 // ─── Chip blocks with "+N more" expansion ──────────────────────────────────
 
-const QUERY_VISIBLE_CAP = 12;
 const CANNIBAL_VISIBLE_CAP = 5;
 
-/** Anchors first (in their priority order from the classifier), then the rest. */
-function sortQueriesAnchorsFirst(all: string[], anchors: string[]): string[] {
-  const anchorOrder = new Map(anchors.map((q, i) => [q, i] as const));
-  const inAnchors = all.filter((q) => anchorOrder.has(q)).sort(
-    (a, b) => (anchorOrder.get(a)! - anchorOrder.get(b)!),
-  );
-  const rest = all.filter((q) => !anchorOrder.has(q));
-  return [...inAnchors, ...rest];
+/** Strip protocol+host so chip suffixes stay short. Falls back to the input on parse failure. */
+function pathFromUrl(url: string): string {
+  try {
+    return new URL(url).pathname || url;
+  } catch {
+    return url;
+  }
 }
 
-function QueryChipsBlock({ queries, anchors }: { queries: string[]; anchors: string[] }) {
+// Topic coverage tiers — same thresholds the v11+ classifier prompt uses
+// when reasoning about whether a topic needs body additions.
+type CoverageTier = "covered" | "marginal" | "missing" | "unknown";
+
+function coverageTier(score: number | null | undefined): CoverageTier {
+  if (score == null) return "unknown";
+  if (score >= 0.55) return "covered";
+  if (score >= 0.4) return "marginal";
+  return "missing";
+}
+
+// Tier rank for sorting — needs-coverage first, covered last. `unknown`
+// (no embedding score yet) sits between marginal and covered: probably
+// fine, but worth showing in the visible band so the editor can sanity-
+// check until the next sync fills the score in.
+const TIER_RANK: Record<CoverageTier, number> = {
+  missing: 0,
+  marginal: 1,
+  unknown: 2,
+  covered: 3,
+};
+
+/**
+ * Anchors first (in classifier priority order), then non-anchors sorted by
+ * coverage tier ascending (missing → marginal → unknown → covered), with
+ * within-tier ties broken by raw score ascending (most-missing first).
+ */
+function sortQueriesByPriority(
+  all: string[],
+  anchors: string[],
+  topicCoverage: Record<string, number | null>,
+): string[] {
+  const anchorOrder = new Map(anchors.map((q, i) => [q, i] as const));
+  return [...all].sort((a, b) => {
+    const aAnchor = anchorOrder.get(a);
+    const bAnchor = anchorOrder.get(b);
+    if (aAnchor != null && bAnchor == null) return -1;
+    if (aAnchor == null && bAnchor != null) return 1;
+    if (aAnchor != null && bAnchor != null) return aAnchor - bAnchor;
+    const aTier = TIER_RANK[coverageTier(topicCoverage[a])];
+    const bTier = TIER_RANK[coverageTier(topicCoverage[b])];
+    if (aTier !== bTier) return aTier - bTier;
+    return (topicCoverage[a] ?? 0.5) - (topicCoverage[b] ?? 0.5);
+  });
+}
+
+function QueryChipsBlock({
+  queries,
+  anchors,
+  externalCanonicals,
+  topicCoverage,
+}: {
+  queries: string[];
+  anchors: string[];
+  externalCanonicals: Record<string, { url: string; position: number | null }>;
+  topicCoverage: Record<string, number | null>;
+}) {
   const [expanded, setExpanded] = useState(false);
-  const sorted = sortQueriesAnchorsFirst(queries, anchors);
-  // Always show all anchors; cap the rest. If anchors alone exceed cap, show them all.
-  const visibleCount = expanded
-    ? sorted.length
-    : Math.max(QUERY_VISIBLE_CAP, anchors.length);
+  const sorted = sortQueriesByPriority(queries, anchors, topicCoverage);
+  // Visibility rule: anchors always visible (LLM-curated relevance),
+  // non-anchors visible only when they need coverage. Well-covered
+  // non-anchors collapse into "+N more" — they're useful as confirmation
+  // the page covers the cluster, but they're not the editor's work.
+  const anchorSet = new Set(anchors);
+  const naturallyVisible = sorted.filter((q) => {
+    if (anchorSet.has(q)) return true;
+    return coverageTier(topicCoverage[q]) !== "covered";
+  });
+  const visibleCount = expanded ? sorted.length : naturallyVisible.length;
   const visible = sorted.slice(0, visibleCount);
   const hidden = sorted.length - visible.length;
 
@@ -444,26 +786,75 @@ function QueryChipsBlock({ queries, anchors }: { queries: string[]; anchors: str
       <div className="flex flex-wrap gap-1.5">
         {visible.map((q) => {
           const isAnchor = anchors.includes(q);
+          const canonical = externalCanonicals[q];
+          const score = topicCoverage[q];
+          const tier = coverageTier(score);
+          // Canonical-owned chips render in slate (deferred), even when they
+          // appear in the deterministic anchor list — the v12 prompt excludes
+          // them from start_with for exactly this reason. Visual cue: amber =
+          // attack here, slate-w/-arrow = defer to canonical sibling. Coverage
+          // dot (emerald/amber/rose) is a secondary signal layered on top.
+          const tone = canonical
+            ? "bg-slate-100 text-slate-700 ring-slate-300"
+            : isAnchor
+              ? "bg-amber-50 text-amber-900 ring-amber-200 font-medium"
+              : "bg-zinc-100 text-zinc-700 ring-zinc-200";
+          const dotTone =
+            tier === "covered"
+              ? "bg-emerald-500"
+              : tier === "marginal"
+                ? "bg-amber-500"
+                : tier === "missing"
+                  ? "bg-rose-500"
+                  : null;
           return (
             <Tooltip key={q}>
               <TooltipTrigger asChild>
                 <span
                   className={cn(
                     "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ring-1 ring-inset cursor-help",
-                    isAnchor
-                      ? "bg-amber-50 text-amber-900 ring-amber-200 font-medium"
-                      : "bg-zinc-100 text-zinc-700 ring-zinc-200",
+                    tone,
                   )}
                 >
-                  {isAnchor && <Sparkles className="h-2.5 w-2.5" />}
-                  {q}
+                  {dotTone && (
+                    <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", dotTone)} aria-hidden />
+                  )}
+                  {isAnchor && !canonical && <Sparkles className="h-2.5 w-2.5" />}
+                  {canonical && <CornerUpRight className="h-2.5 w-2.5 opacity-70" />}
+                  <span>{q}</span>
+                  {canonical && (
+                    <span className="font-mono text-[10px] opacity-70 truncate max-w-[14rem]">
+                      {pathFromUrl(canonical.url)}
+                    </span>
+                  )}
                 </span>
               </TooltipTrigger>
-              {isAnchor && (
-                <TooltipContent className="max-w-xs">
-                  Anchor query — high volume relative to difficulty and close to the top of striking distance. Start the rewrite here.
-                </TooltipContent>
-              )}
+              <TooltipContent className="max-w-xs">
+                {canonical ? (
+                  <>
+                    Canonical sibling already wins this query at #{canonical.position ?? "?"} on the live SERP.
+                    Optimizing this page for &ldquo;{q}&rdquo; would cannibalize{" "}
+                    <span className="font-mono">{pathFromUrl(canonical.url)}</span>.
+                    {score != null && (
+                      <span className="block mt-1 opacity-80">Topic coverage on this page: {Math.round(score * 100)}%.</span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {isAnchor
+                      ? "Anchor query — high volume relative to difficulty and close to the top of striking distance."
+                      : "Cluster member — included in aggregate metrics but not flagged as an anchor."}
+                    {score != null && (
+                      <span className="block mt-1 opacity-80">
+                        Topic coverage: {Math.round(score * 100)}%
+                        {tier === "covered" && " — page substantively covers this topic; adding body content is unlikely to help."}
+                        {tier === "marginal" && " — page touches the topic; an extension may help."}
+                        {tier === "missing" && " — topic genuinely missing from the page."}
+                      </span>
+                    )}
+                  </>
+                )}
+              </TooltipContent>
             </Tooltip>
           );
         })}
@@ -473,10 +864,10 @@ function QueryChipsBlock({ queries, anchors }: { queries: string[]; anchors: str
             onClick={() => setExpanded(true)}
             className="rounded-full bg-white px-2 py-0.5 text-[11px] text-zinc-700 ring-1 ring-inset ring-zinc-300 hover:bg-zinc-50"
           >
-            +{hidden} more
+            +{hidden} already covered
           </button>
         )}
-        {expanded && sorted.length > QUERY_VISIBLE_CAP && (
+        {expanded && naturallyVisible.length < sorted.length && (
           <button
             type="button"
             onClick={() => setExpanded(false)}

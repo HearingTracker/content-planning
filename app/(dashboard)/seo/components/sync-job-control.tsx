@@ -23,6 +23,7 @@ import {
   GitMerge,
   Layers,
   Loader2,
+  Network,
   RefreshCw,
   Save,
   Tag,
@@ -44,8 +45,10 @@ const PHASE_META: Record<
   label:    { label: "Labeling clusters",                      Icon: Tag },
   match:    { label: "Matching against existing clusters",     Icon: GitMerge },
   classify: { label: "Classifying coverage per cluster",       Icon: Wand2 },
-  upsert:   { label: "Writing to database",                    Icon: Save },
-  done:     { label: "Done",                                   Icon: CheckCircle2 },
+  upsert:        { label: "Writing to database",                    Icon: Save },
+  rank_snapshot: { label: "Snapshotting rank history",               Icon: Database },
+  synthesize:    { label: "Synthesizing site-wide insights",         Icon: Network },
+  done:          { label: "Done",                                    Icon: CheckCircle2 },
 };
 
 export function SyncJobControl() {

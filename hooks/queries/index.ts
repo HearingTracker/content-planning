@@ -19,6 +19,8 @@ export type { UserRole } from "./use-current-user";
 export {
   useSeoPages,
   useSeoOpportunities,
+  useSynthesisFindingsForPage,
+  useSynthesisFindings,
   useUpdateOpportunityStatus,
   useAssignOpportunity,
   useUpdateOpportunityNotes,

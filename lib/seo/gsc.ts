@@ -57,6 +57,55 @@ async function getAccessToken(): Promise<string> {
   return data.access_token;
 }
 
+// Transient network errors (ETIMEDOUT, ECONNRESET, etc.) bubble up from
+// undici as `TypeError: fetch failed` with a `cause` carrying the syscall
+// code. Treating any TypeError as retryable is too broad; treating only
+// known network codes is right.
+const RETRYABLE_NETWORK_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "UND_ERR_SOCKET",
+]);
+
+function isRetryableNetworkError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const cause = (err as { cause?: { code?: string } }).cause;
+  return typeof cause?.code === "string" && RETRYABLE_NETWORK_CODES.has(cause.code);
+}
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  opts: { attempts?: number; baseDelayMs?: number } = {},
+): Promise<Response> {
+  const attempts = opts.attempts ?? 4;
+  const baseDelayMs = opts.baseDelayMs ?? 500;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      // 5xx and 429 are retryable; everything else (incl. 4xx) is final.
+      if (res.status >= 500 || res.status === 429) {
+        if (attempt < attempts - 1) {
+          const delay = baseDelayMs * 2 ** attempt;
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+      }
+      return res;
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableNetworkError(err) || attempt === attempts - 1) throw err;
+      const delay = baseDelayMs * 2 ** attempt;
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr ?? new Error("fetchWithRetry exhausted attempts");
+}
+
 export async function fetchGSCRows(opts: {
   siteUrl: string;
   startDate: string; // YYYY-MM-DD
@@ -69,7 +118,7 @@ export async function fetchGSCRows(opts: {
   const maxRows = opts.maxRows ?? 100000;
   const out: GSCRow[] = [];
   for (let startRow = 0; startRow < maxRows; startRow += rowLimit) {
-    const res = await fetch(
+    const res = await fetchWithRetry(
       `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(opts.siteUrl)}/searchAnalytics/query`,
       {
         method: "POST",

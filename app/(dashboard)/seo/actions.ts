@@ -4,7 +4,14 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRole } from "@/lib/auth/roles";
-import type { SeoOppStatus, SeoPage, SeoOpportunity, SeoSyncJob } from "./types";
+import type {
+  SeoOppStatus,
+  SeoPage,
+  SeoOpportunity,
+  SeoSyncJob,
+  SeoSynthesisFinding,
+  SeoSynthesisKindKey,
+} from "./types";
 
 async function requireEditor(): Promise<string> {
   const role = await getCurrentUserRole();
@@ -41,8 +48,9 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
         total_missed_clicks, weighted_ctr_pct, expected_ctr_pct, avg_position,
         min_kd, max_kd, match_decision, match_score,
         coverage_recommendation, coverage_confidence,
-        anchor_queries, cannibal_overlap,
-        cp_seo_query_findings ( query )
+        anchor_queries, start_with_queries, anchor_external_canonicals,
+        cannibal_overlap,
+        cp_seo_query_findings ( query, topic_coverage_score )
       )
     `,
     )
@@ -86,8 +94,20 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
       coverage_recommendation: string | null;
       coverage_confidence: number | string | null;
       anchor_queries: { query: string; score: number }[] | null;
-      cannibal_overlap: Record<string, string[]> | null;
-      cp_seo_query_findings: { query: string }[] | null;
+      start_with_queries: string[] | null;
+      anchor_external_canonicals:
+        | Array<{ query: string; url: string; position: number }>
+        | null;
+      // Legacy shape: { query: string[] } — paths only.
+      // Current shape: { query: { url: string; wins?: [...] }[] } — SERP-verified
+      // competitors with annotations. Reader below tolerates both for rows
+      // classified before prompt v7.
+      cannibal_overlap:
+        | Record<string, Array<string | { url: string }>>
+        | null;
+      cp_seo_query_findings:
+        | { query: string; topic_coverage_score: number | string | null }[]
+        | null;
     };
   };
 
@@ -95,10 +115,34 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
     const anchors = Array.isArray(row.cluster.anchor_queries)
       ? row.cluster.anchor_queries.map((a) => a.query).filter((q): q is string => typeof q === "string")
       : [];
+    // start_with_queries is the LLM-curated highlight subset, persisted
+    // NOT NULL DEFAULT '[]'. An empty array is a positive "nothing to
+    // attack" signal (correct for coverage_strong, wrong_page, cede, and
+    // ai_overview_loss whose AIO anchors all carry external canonicals) —
+    // do NOT fall back to highlighting every anchor in that case.
+    const startWith = Array.isArray(row.cluster.start_with_queries)
+      ? row.cluster.start_with_queries.filter((q): q is string => typeof q === "string")
+      : [];
+    const externalCanonicals: SeoOpportunity["external_canonicals"] = {};
+    if (Array.isArray(row.cluster.anchor_external_canonicals)) {
+      for (const e of row.cluster.anchor_external_canonicals) {
+        if (e && typeof e.query === "string" && typeof e.url === "string") {
+          externalCanonicals[e.query] = {
+            url: e.url,
+            position: typeof e.position === "number" ? e.position : null,
+          };
+        }
+      }
+    }
     const cannibalSet = new Set<string>();
     if (row.cluster.cannibal_overlap && typeof row.cluster.cannibal_overlap === "object") {
-      for (const pages of Object.values(row.cluster.cannibal_overlap)) {
-        for (const p of pages ?? []) cannibalSet.add(p);
+      for (const entries of Object.values(row.cluster.cannibal_overlap)) {
+        for (const entry of entries ?? []) {
+          if (typeof entry === "string") cannibalSet.add(entry);
+          else if (entry && typeof entry === "object" && typeof entry.url === "string") {
+            cannibalSet.add(entry.url);
+          }
+        }
       }
     }
     return {
@@ -132,12 +176,110 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
       match_decision: row.cluster.match_decision,
       match_score: row.cluster.match_score,
       member_queries: (row.cluster.cp_seo_query_findings ?? []).map((f) => f.query),
+      topic_coverage_by_query: Object.fromEntries(
+        (row.cluster.cp_seo_query_findings ?? [])
+          .map((f) => [
+            f.query,
+            f.topic_coverage_score == null ? null : Number(f.topic_coverage_score),
+          ] as const)
+          .filter(([, v]) => v == null || (typeof v === "number" && Number.isFinite(v))),
+      ),
       recommendation: row.cluster.coverage_recommendation,
       confidence: row.cluster.coverage_confidence != null ? Number(row.cluster.coverage_confidence) : null,
       anchor_queries: anchors,
+      start_with_queries: startWith,
+      external_canonicals: externalCanonicals,
       cannibal_pages: [...cannibalSet].sort(),
     };
   });
+}
+
+// ─── Phase 1C: site-wide synthesis findings ───────────────────────────────
+
+/**
+ * Synthesis findings relevant to the per-page drilldown. Three buckets, all
+ * deduped into a single array ordered by score desc:
+ *
+ *   1. scope_page = page — this page is the subject (e.g. fully_ceded_page).
+ *   2. target_page = page — synthesis recommends extending/owning this page.
+ *   3. scope_query ∈ anchors of any open cluster on this page — a query the
+ *      classifier is reasoning about here also has a site-wide finding,
+ *      potentially with a *different* canonical target. The cluster card
+ *      surfaces these as "Heads up" badges so the editor sees the cross-page
+ *      mismatch directly next to the prose.
+ *
+ * Bucket 3 is what makes the on-page prose recommendations honest about
+ * SERP-structural caps the per-cluster classifier never saw.
+ */
+export async function getSynthesisFindingsForPage(
+  page: string,
+): Promise<SeoSynthesisFinding[]> {
+  const supabase = await createClient();
+
+  // Pull anchor sets first so we can scope the query-keyed lookup. Open
+  // opportunities only — archived clusters shouldn't pull in findings.
+  const { data: clusterRows, error: clusterErr } = await supabase
+    .from("cp_seo_opportunities")
+    .select("cluster:cp_seo_clusters!inner ( anchor_queries )")
+    .eq("page", page)
+    .is("archived_at", null)
+    .not("cluster_id", "is", null);
+  if (clusterErr) throw new Error(clusterErr.message);
+
+  const anchorSet = new Set<string>();
+  for (const row of (clusterRows ?? []) as unknown as Array<{
+    cluster: { anchor_queries: { query: string }[] | null };
+  }>) {
+    for (const a of row.cluster?.anchor_queries ?? []) {
+      if (typeof a?.query === "string") anchorSet.add(a.query);
+    }
+  }
+
+  // Two queries merged — simpler and more robust than building a
+  // PostgREST `or(…, scope_query.in.(…))` with quoted query strings.
+  const [pageRes, anchorRes] = await Promise.all([
+    supabase
+      .from("cp_seo_synthesis_findings")
+      .select("*")
+      .is("archived_at", null)
+      .or(`scope_page.eq.${page},target_page.eq.${page}`),
+    anchorSet.size > 0
+      ? supabase
+          .from("cp_seo_synthesis_findings")
+          .select("*")
+          .is("archived_at", null)
+          .in("scope_query", [...anchorSet])
+      : Promise.resolve({ data: [], error: null as unknown }),
+  ]);
+  if (pageRes.error) throw new Error(pageRes.error.message);
+  if (anchorRes.error) throw new Error((anchorRes.error as Error).message);
+
+  const byId = new Map<number, SeoSynthesisFinding>();
+  for (const f of (pageRes.data ?? []) as SeoSynthesisFinding[]) byId.set(f.id, f);
+  for (const f of (anchorRes.data ?? []) as SeoSynthesisFinding[]) byId.set(f.id, f);
+  return [...byId.values()].sort((a, b) => Number(b.score) - Number(a.score));
+}
+
+/**
+ * Site-wide synthesis findings reader — backs the /seo/site portfolio view.
+ * Filters by kind when provided; otherwise returns all open findings ordered
+ * by score desc.
+ */
+export async function getSynthesisFindings(opts: {
+  kind?: SeoSynthesisKindKey;
+  limit?: number;
+} = {}): Promise<SeoSynthesisFinding[]> {
+  const supabase = await createClient();
+  let q = supabase
+    .from("cp_seo_synthesis_findings")
+    .select("*")
+    .is("archived_at", null)
+    .order("score", { ascending: false });
+  if (opts.kind) q = q.eq("kind", opts.kind);
+  if (opts.limit) q = q.limit(opts.limit);
+  const { data, error } = await q;
+  if (error) throw new Error(error.message);
+  return (data ?? []) as SeoSynthesisFinding[];
 }
 
 export async function updateOpportunityStatus(id: number, status: SeoOppStatus): Promise<void> {

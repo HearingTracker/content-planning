@@ -18,7 +18,8 @@ export type SeoOppKindKey =
   | "wrong_page"
   | "freshness"
   | "consolidate"
-  | "cede";
+  | "cede"
+  | "ai_overview_loss";
 
 export type SeoPage = {
   page: string;
@@ -95,12 +96,30 @@ export type SeoOpportunity = {
 
   // Member queries (joined from cp_seo_query_findings)
   member_queries: string[];
+  /**
+   * Per-query semantic topic-coverage score (0–1, 3 decimals). Computed at
+   * sync time as the max cosine similarity between the query embedding and
+   * the page's section embeddings. Null when the page has no embeddable
+   * sections, or when the row predates the column. Used by chip UI to
+   * color-code coverage tier (≥0.55 covered, 0.40–0.55 marginal, <0.40
+   * missing).
+   */
+  topic_coverage_by_query: Record<string, number | null>;
 
   // Phase 1B coverage classifier output
   recommendation: string | null;
   confidence: number | null;
-  /** Top 3–5 anchor queries (low-hanging-fruit ranking), in priority order. */
+  /** Top 3–5 anchor queries (deterministic LH-fruit ranking), in priority order. */
   anchor_queries: string[];
+  /** LLM-curated subset of anchors to highlight first (excludes already-covered + ceded). Empty array is the LLM's positive "nothing to attack" signal — do NOT fall back to anchor_queries. */
+  start_with_queries: string[];
+  /**
+   * Per-anchor external canonical: another HearingTracker URL that ranks ≤10 in
+   * the live SERP for that anchor. The canonical owner of the topic — body
+   * additions / snippet rewrites for that anchor on this page would
+   * cannibalize it. Keyed by anchor query.
+   */
+  external_canonicals: Record<string, { url: string; position: number | null }>;
   /** Pages that compete on at least one cluster member, deduped. */
   cannibal_pages: string[];
 
@@ -115,6 +134,33 @@ export type SeoFilters = {
   assignedTo?: string | "any";
 };
 
+// Phase 1C/1D — site-wide synthesis layer. Mirrors cp_seo_synthesis_kinds.
+export type SeoSynthesisKindKey =
+  | "fully_ceded_page"
+  | "undesignated_topic"
+  | "aio_no_citation"
+  | "orphan_target"
+  // Phase 1D blind-spot kinds
+  | "authority_capped_serp"
+  | "brand_cannibalization"
+  | "freshness"
+  | "internal_link_gap";
+
+export type SeoSynthesisFinding = {
+  id: number;
+  kind: SeoSynthesisKindKey;
+  scope_page: string | null;
+  scope_query: string | null;
+  target_page: string | null;
+  score: number;
+  evidence: Record<string, unknown>;
+  detected_in_job_id: number | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  archived_at: string | null;
+  identity_hash: string;
+};
+
 export type SeoSyncJobStatus = "pending" | "running" | "completed" | "failed";
 export type SeoSyncJobPhase =
   | "gsc"
@@ -124,6 +170,8 @@ export type SeoSyncJobPhase =
   | "match"
   | "classify"
   | "upsert"
+  | "rank_snapshot"
+  | "synthesize"
   | "done";
 
 export type SeoSyncJob = {

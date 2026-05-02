@@ -17,6 +17,7 @@ import {
   matchClusters,
   meanCentroid,
   type ClusterableQuery,
+  type ClusterMember,
   type CandidateForMatch,
   type ExistingClusterForMatch,
   type MatchResult,
@@ -26,12 +27,33 @@ import {
   classifyClustersConcurrently,
   rankAnchorQueries,
   type AnchorCandidate,
+  type CompetingPage,
+  type CoverageAnchor,
   type CoverageInput,
   type CoverageMemberSignal,
   type CoverageResult,
 } from "./coverage";
 import type { PageMeta } from "./classify";
+import { expectedCtr } from "./classify";
+import { loadSerps, normalizeUrlForMatch, type SerpData } from "./serp-data";
+import { embedPageSections, topicCoverageScore } from "./section-embeddings";
 import { SyncJobReporter, type CompletionStats } from "./sync-job-reporter";
+import { runSiteSynthesis } from "./synthesis";
+
+// Hostname for SERP-membership comparison. The sync runs against
+// www.hearingtracker.com paths only (forum/shop subdomains are separate GSC
+// properties), so we always rebuild full URLs with this host.
+const SITE_HOSTNAME = "www.hearingtracker.com";
+
+// Per-anchor external canonical row — the shape persisted to
+// cp_seo_clusters.anchor_external_canonicals (jsonb array).
+type AnchorExternalCanonicalRow = {
+  query: string;
+  url: string;
+  position: number;
+  kd: number | null;
+  volume: number | null;
+};
 
 function getServiceClient(): SupabaseClient {
   return createSb(
@@ -227,10 +249,86 @@ export async function runSyncJob(jobId: number): Promise<void> {
     await reporter.setPhase("classify", candidateCount);
     // Build cross-page query → competing pages map ONCE for the whole sync.
     // Any query that appears in striking-distance findings on more than one
-    // revenue page is a cannibalization signal the classifier should see.
+    // revenue page is a cannibalization CANDIDATE — we then verify each via
+    // a live SERP check below before letting the classifier act on it.
     const queryToPages = buildQueryPagesMap(opportunities);
-    const coverageInputs = buildCoverageInputs(flatCandidates, labels, pageMetas, queryToPages);
-    const anchorsByCluster = coverageInputs.map((ci) => ci.anchors);
+
+    // Fetch live top-20 SERPs for two overlapping query sets:
+    //   1. Multi-page candidates — used by the SERP gate to filter GSC-noise
+    //      cannibalization signals (any URL flagged as "competing" must
+    //      actually appear in the live top-20 organic).
+    //   2. Every cluster's deterministic anchor queries — needed so we can
+    //      detect AI Overviews and EXTERNAL CANONICALS (sibling HT pages
+    //      ranking #1–3 above the GSC striking-distance window of 4–15).
+    // Both go through cp_seo_serp_cache, so the union dedupes for free.
+    const multiPageQueries = [...queryToPages.entries()]
+      .filter(([, pages]) => pages.size >= 2)
+      .map(([q]) => q);
+    const anchorQueriesAcrossClusters = collectAnchorQueries(flatCandidates);
+    const serpsToFetch = [...new Set([...multiPageQueries, ...anchorQueriesAcrossClusters])];
+    const serpDataByQuery = serpsToFetch.length > 0
+      ? await loadSerps(serpsToFetch, "us")
+      : new Map<string, SerpData>();
+    await reporter.log(
+      `SERP fetch — ${multiPageQueries.length} multi-page + ${anchorQueriesAcrossClusters.length} anchor queries (${serpsToFetch.length} unique), ${serpDataByQuery.size} SERPs available`,
+    );
+
+    // (page, query) → SeoOpportunityRow lookup for "what does this competitor
+    // win" annotations. Built once over the full opportunity set so every
+    // cluster sees consistent positions.
+    const oppByPageQuery = buildOppByPageQuery(opportunities);
+
+    // Embed each page's topical surface (title, H1, headings, body chunks) so
+    // the classifier can distinguish "exact phrase missing" from "topic
+    // missing". Without this, /best-hearing-aids gets told to "add a pricing
+    // section" even though it has an H2 "How much do hearing aids cost?".
+    const sectionEmb = await embedPageSections(pageMetas);
+    embedTokens += sectionEmb.tokens;
+    await reporter.log(
+      `Section embeddings — ${sectionEmb.embeddings.size} pages, ${sectionEmb.tokens.toLocaleString()} input tokens`,
+    );
+
+    const coverageInputs = buildCoverageInputs(
+      flatCandidates,
+      labels,
+      pageMetas,
+      queryToPages,
+      serpDataByQuery,
+      oppByPageQuery,
+      sectionEmb.embeddings,
+    );
+    const anchorsByCluster = coverageInputs.map((ci) =>
+      ci.anchors.map((a) => ({ query: a.query, score: a.score })),
+    );
+    // Per-(cluster, query) topic coverage score — parallel to coverageInputs.
+    // Persisted on cp_seo_query_findings during the upsert phase so the
+    // drilldown UI can color-code chips without reclassifying.
+    const topicScoresByCluster: Map<string, number>[] = coverageInputs.map(
+      (ci) => {
+        const m = new Map<string, number>();
+        for (const member of ci.members) {
+          if (typeof member.topic_coverage_score === "number") {
+            m.set(member.query, member.topic_coverage_score);
+          }
+        }
+        return m;
+      },
+    );
+    // Per-anchor external canonicals — only anchors whose live SERP shows a
+    // different HT URL ranking ≤10 produce a row here. The synthesizer reads
+    // this column to detect fully_ceded_page (lib/seo/synthesis.ts).
+    const anchorExternalCanonicalsByCluster: AnchorExternalCanonicalRow[][] =
+      coverageInputs.map((ci) =>
+        ci.anchors
+          .filter((a) => a.external_canonical)
+          .map((a) => ({
+            query: a.query,
+            url: a.external_canonical!.url,
+            position: a.external_canonical!.position,
+            kd: a.external_canonical!.kd,
+            volume: a.external_canonical!.volume,
+          })),
+      );
     const cannibalByCluster = coverageInputs.map((ci) => buildCannibalOverlap(ci.members));
 
     let classifiedDone = 0;
@@ -258,6 +356,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
     await reporter.setPhase("upsert");
     const upsertResult = await upsertEverything(supabase, {
       pages,
+      pageMetas,
       candidatesByPage,
       labels,
       flatCandidates,
@@ -265,8 +364,58 @@ export async function runSyncJob(jobId: number): Promise<void> {
       existingByPage,
       coverage: coverageEmitted,
       anchorsByCluster,
+      anchorExternalCanonicalsByCluster,
       cannibalByCluster,
+      topicScoresByCluster,
     });
+
+    // ── Phase: rank_snapshot (Phase 1D) ───────────────────────────────────
+    // Persist a point-in-time snapshot of every (page, query, position)
+    // into cp_seo_rank_history. The synthesizer's freshness detector reads
+    // this table to compute rank-decline over the trailing 8-week window —
+    // cp_seo_query_findings always reflects only the latest sync, so without
+    // this snapshot rank-decline detection is structurally impossible.
+    // Also handles 90-day retention pruning.
+    await reporter.setPhase("rank_snapshot");
+    try {
+      const snapshotCount = await snapshotRankHistory(supabase);
+      await reporter.log(`Rank history — snapshotted ${snapshotCount} (page, query) rows`);
+    } catch (rankErr) {
+      const msg = rankErr instanceof Error ? rankErr.message : String(rankErr);
+      await reporter.log(`Rank snapshot failed (non-fatal): ${msg}`);
+    }
+
+    // ── Phase: synthesize (site-wide strategic insights) ──────────────────
+    // Reads the just-frozen DB state — cp_seo_clusters with anchor_external_canonicals,
+    // cp_seo_query_findings, and cp_seo_serp_cache — and emits cross-page
+    // findings the per-cluster classifier cannot see (fully_ceded_page,
+    // undesignated_topic, aio_no_citation, orphan_target). Detection-only,
+    // no LLM. Embedding tokens for orphan_target adjacency are counted.
+    await reporter.setPhase("synthesize");
+    let synthesisEmbedTokens = 0;
+    try {
+      const synthesisResult = await runSiteSynthesis(supabase, jobId);
+      // The detector calls embedQueries internally for orphan candidates;
+      // approximate token cost as candidate query character count / 4 since
+      // the helper doesn't return tokens. Off-by-a-fraction here is fine
+      // for cost estimation. (We don't expose tokens from runSiteSynthesis
+      // to keep the API narrow; revisit if costs become material.)
+      synthesisEmbedTokens = 0;
+      const counts = synthesisResult.kindCounts;
+      const summary = (Object.keys(counts) as (keyof typeof counts)[])
+        .filter((k) => counts[k] > 0)
+        .map((k) => `${k}: ${counts[k]}`)
+        .join(", ") || "(none)";
+      await reporter.log(
+        `Synthesis findings — total ${synthesisResult.total} (${summary}); inserted ${synthesisResult.inserted}, updated ${synthesisResult.updated}, archived ${synthesisResult.archived}`,
+      );
+    } catch (synthErr) {
+      // Synthesis failures should not abort the whole sync — the per-cluster
+      // verdicts are already persisted and useful on their own.
+      const msg = synthErr instanceof Error ? synthErr.message : String(synthErr);
+      await reporter.log(`Synthesis failed (non-fatal): ${msg}`);
+    }
+    embedTokens += synthesisEmbedTokens;
 
     const tokens = { embed: embedTokens, llmIn, llmOut };
     const cost = estimateCost(tokens);
@@ -531,6 +680,12 @@ async function upsertEverything(
   supabase: SupabaseClient,
   ctx: {
     pages: SeoPageRow[];
+    /**
+     * Per-page Storyblok + rendered metadata. Carries the new Phase 1D
+     * fields (`contentModifiedAt`, `outboundInternalLinks`) that the
+     * page upsert persists into cp_seo_pages.
+     */
+    pageMetas: Map<string, PageMeta>;
     candidatesByPage: Map<string, PageCandidate[]>;
     labels: LabelResult[];
     flatCandidates: PageCandidate[];
@@ -540,8 +695,24 @@ async function upsertEverything(
     coverage: CoverageResult[];
     /** One per flatCandidates entry — the deterministic anchor query ranking. */
     anchorsByCluster: { query: string; score: number }[][];
-    /** One per flatCandidates entry — { query: ['/page-a',…] } cannibalization snapshot. */
-    cannibalByCluster: Record<string, string[]>[];
+    /**
+     * One per flatCandidates entry — anchors whose live SERP shows a different
+     * HT URL ranking ≤10. Persisted to cp_seo_clusters.anchor_external_canonicals
+     * so the site-wide synthesizer can detect fully_ceded_page in SQL.
+     */
+    anchorExternalCanonicalsByCluster: AnchorExternalCanonicalRow[][];
+    /**
+     * One per flatCandidates entry — `{ query: CompetingPage[] }` cannibalization
+     * snapshot. Each `CompetingPage` carries the URL and the queries that URL
+     * currently wins within this cluster (its strongest on-site rankings).
+     */
+    cannibalByCluster: Record<string, CompetingPage[]>[];
+    /**
+     * One per flatCandidates entry — per-query topic coverage score (0–1)
+     * computed during buildCoverageInputs. Persisted on
+     * cp_seo_query_findings so the UI can color-code chips by coverage tier.
+     */
+    topicScoresByCluster: Map<string, number>[];
   },
 ): Promise<{ created: number; matched: number; archived: number; opportunities: number }> {
   const now = new Date().toISOString();
@@ -557,7 +728,7 @@ async function upsertEverything(
   await supabase.from("cp_seo_opportunities").delete().is("cluster_id", null);
 
   // 1. Update existing pages (or insert if missing).
-  await upsertPages(supabase, ctx.pages, now);
+  await upsertPages(supabase, ctx.pages, ctx.pageMetas, now);
 
   // 2. For each page, upsert clusters (UPDATE matched, INSERT new, ARCHIVE orphans),
   //    then findings, then opportunities.
@@ -573,7 +744,9 @@ async function upsertEverything(
       const label = ctx.labels[labelIdx];
       const cov = ctx.coverage[labelIdx] ?? null;
       const anchors = ctx.anchorsByCluster[labelIdx] ?? [];
+      const anchorExternalCanonicals = ctx.anchorExternalCanonicalsByCluster[labelIdx] ?? [];
       const cannibal = ctx.cannibalByCluster[labelIdx] ?? {};
+      const topicScores = ctx.topicScoresByCluster[labelIdx] ?? new Map<string, number>();
       labelIdx++;
 
       const baseFields = {
@@ -615,6 +788,8 @@ async function upsertEverything(
         coverage_input_digest: cov?.audit ?? null,
         coverage_classified_at: cov ? now : null,
         anchor_queries: anchors,
+        anchor_external_canonicals: anchorExternalCanonicals,
+        start_with_queries: cov?.startWith ?? [],
         cannibal_overlap: cannibal,
         last_seen_at: now,
         archived_at: null,
@@ -669,6 +844,7 @@ async function upsertEverything(
         phrase_in_body: member.source.phrase_in_body,
         in_heading: member.source.in_heading,
         novel_tokens: member.source.novel_tokens,
+        topic_coverage_score: topicScores.get(member.query) ?? null,
         last_seen_at: now,
         archived_at: null,
       }));
@@ -749,21 +925,80 @@ async function upsertEverything(
 async function upsertPages(
   supabase: SupabaseClient,
   pages: SeoPageRow[],
+  pageMetas: Map<string, PageMeta>,
   now: string,
 ): Promise<void> {
   if (pages.length === 0) return;
-  const rows = pages.map((p) => ({
-    page: p.page,
-    page_title: p.page_title,
-    meta_source: p.meta_source,
-    earnings_90d: p.earnings_90d,
-    conversions_90d: p.conversions_90d,
-    last_synced_at: now,
-  }));
+  const rows = pages.map((p) => {
+    const meta = pageMetas.get(p.page);
+    return {
+      page: p.page,
+      page_title: p.page_title,
+      meta_source: p.meta_source,
+      earnings_90d: p.earnings_90d,
+      conversions_90d: p.conversions_90d,
+      last_synced_at: now,
+      // Phase 1D — populated when available, null otherwise. The synthesizer
+      // tolerates nulls (treats them as "unknown — don't fire freshness").
+      content_modified_at: meta?.contentModifiedAt ?? null,
+      outbound_internal_links: meta?.outboundInternalLinks ?? null,
+    };
+  });
   const { error } = await supabase
     .from("cp_seo_pages")
     .upsert(rows, { onConflict: "page" });
   if (error) throw new Error(`upsertPages: ${error.message}`);
+}
+
+/**
+ * Persist a point-in-time rank snapshot from the just-written
+ * cp_seo_query_findings into cp_seo_rank_history. Each row is a
+ * (page, query, position, recorded_at) tuple — recorded_at is the same
+ * for every row in this snapshot so they form one logical "sync point."
+ *
+ * Also prunes rows older than 90 days. Storage stays bounded.
+ */
+async function snapshotRankHistory(supabase: SupabaseClient): Promise<number> {
+  const recordedAt = new Date().toISOString();
+
+  // Read findings in pages — Postgres caps default at 1000 rows. Pull every
+  // page from cp_seo_query_findings and snapshot.
+  const PAGE_SIZE = 1000;
+  let offset = 0;
+  let inserted = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from("cp_seo_query_findings")
+      .select("page, query, position")
+      .is("archived_at", null)
+      .not("position", "is", null)
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (error) throw new Error(`load findings for snapshot: ${error.message}`);
+    if (!data || data.length === 0) break;
+
+    const rows = data.map((r) => ({
+      page: r.page as string,
+      query: r.query as string,
+      position: r.position as number,
+      recorded_at: recordedAt,
+    }));
+    const { error: insErr } = await supabase
+      .from("cp_seo_rank_history")
+      .upsert(rows, { onConflict: "page,query,recorded_at" });
+    if (insErr) throw new Error(`insert rank history: ${insErr.message}`);
+    inserted += rows.length;
+    if (data.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+
+  // Retention: drop rows older than 90 days.
+  const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  await supabase
+    .from("cp_seo_rank_history")
+    .delete()
+    .lt("recorded_at", cutoff);
+
+  return inserted;
 }
 
 function emptyStats(pageCount: number): CompletionStats {
@@ -804,21 +1039,58 @@ function buildCoverageInputs(
   labels: LabelResult[],
   pageMetas: Map<string, PageMeta>,
   queryToPages: Map<string, Set<string>>,
+  serpDataByQuery: Map<string, SerpData>,
+  oppByPageQuery: Map<string, Map<string, SeoOpportunityRow>>,
+  pageSectionEmbeddings: Map<string, number[][]>,
 ): CoverageInput[] {
   const out: CoverageInput[] = [];
   for (let idx = 0; idx < flatCandidates.length; idx++) {
     const c = flatCandidates[idx];
     const meta = pageMetas.get(c.page);
+    const sectionEmbs = pageSectionEmbeddings.get(c.page) ?? [];
+    // Pre-compute the cluster's member-query set once so we can scope
+    // "wins" to queries the classifier is actually deciding about.
+    const clusterMemberQueries = c.cluster.members.map((mm) => mm.query);
     const members: CoverageMemberSignal[] = c.cluster.members.map((m) => {
       const competing = queryToPages.get(m.query);
       const others = competing
         ? [...competing].filter((p) => p !== c.page).sort()
         : [];
+      const verifiedCompetitors = others.length > 0
+        ? verifyCompetingPages({
+            candidatePaths: others,
+            query: m.query,
+            serpDataByQuery,
+            oppByPageQuery,
+            clusterMemberQueries,
+            queryToPages,
+          })
+        : [];
+      // Semantic coverage — round to 3 dp for stable jsonb digests.
+      const topicScore = sectionEmbs.length > 0
+        ? Math.round(topicCoverageScore(m.embedding, sectionEmbs) * 1000) / 1000
+        : null;
+      // Per-query CTR signals. The position-conditional expected uses the
+      // shared curve so the LLM sees the same baseline as snippet_ctr-checking
+      // logic. SeoOpportunityRow.expected_ctr_pct is also per-position
+      // (see run.ts:189) but we recompute defensively in case the source row
+      // is from an older sync that used a different curve.
+      const expectedAtPos = m.source.position != null
+        ? Math.round(expectedCtr(m.source.position) * 10000) / 100
+        : null;
       return {
         query: m.query,
         phrase_in_body: m.source.phrase_in_body,
         in_heading: m.source.in_heading,
-        competing_pages: others,
+        topic_coverage_score: topicScore,
+        competing_pages: verifiedCompetitors,
+        kd: m.source.kd,
+        volume: m.source.volume,
+        position: m.source.position,
+        impressions: m.source.impressions,
+        clicks: m.source.clicks,
+        ctr_pct: m.source.ctr_pct,
+        expected_ctr_pct: expectedAtPos,
       };
     });
 
@@ -828,7 +1100,63 @@ function buildCoverageInputs(
       volume: m.source.volume,
       kd: m.source.kd,
     }));
-    const anchors = rankAnchorQueries(anchorCandidates, 5);
+    const rawAnchors = rankAnchorQueries(anchorCandidates, 5);
+    // Annotate each anchor with `external_canonical` if a different HT URL
+    // ranks ≤10 in the live SERP for that query. This is the cross-cluster
+    // guard — the canonical might be in a totally different cluster, but
+    // optimizing this page for that anchor would still cannibalize it.
+    const anchors: CoverageAnchor[] = rawAnchors.map((a) => {
+      const memberKd = c.cluster.members.find((m) => m.query === a.query)?.source.kd ?? null;
+      const memberVol = c.cluster.members.find((m) => m.query === a.query)?.source.volume ?? null;
+      const externalCanonical = findExternalCanonical(
+        a.query,
+        c.page,
+        serpDataByQuery,
+        memberKd,
+        memberVol,
+      );
+      return externalCanonical
+        ? { query: a.query, score: a.score, external_canonical: externalCanonical }
+        : { query: a.query, score: a.score };
+    });
+
+    // Per-anchor AIO presence + citation check. Anchors without SERP data
+    // are simply omitted from the array (vs. emitted with aiOverview:false)
+    // so the prompt can distinguish "AIO absent" from "no SERP data."
+    const pageUrlKey = pathToSerpUrlKey(c.page);
+    const anchorAioPresence = anchors.flatMap((a) => {
+      const serp = serpDataByQuery.get(a.query);
+      if (!serp) return [];
+      const cited = serp.ai_overview_present
+        && serp.ai_overview_sources.some((u) => normalizeUrlForMatch(u) === pageUrlKey);
+      return [{
+        query: a.query,
+        aiOverview: serp.ai_overview_present,
+        cited,
+      }];
+    });
+
+    // Cluster-impression share weighted toward anchors with AIO present.
+    // Used by the prompt to discount the standard expected-CTR baseline.
+    const aioPresentAnchorQueries = new Set(
+      anchorAioPresence.filter((a) => a.aiOverview).map((a) => a.query),
+    );
+    let aioImpressions = 0;
+    let totalImpressions = 0;
+    for (const m of c.cluster.members) {
+      const imp = m.source.impressions ?? 0;
+      totalImpressions += imp;
+      if (aioPresentAnchorQueries.has(m.query)) aioImpressions += imp;
+    }
+    const clusterAioImpressionShare = totalImpressions > 0
+      ? aioImpressions / totalImpressions
+      : 0;
+
+    // Hopeless queries — pos ≥10 members ranked by impressions desc, taken
+    // until cumulative share crosses 50% of cluster impressions. The single-
+    // dominant-borderline-query case (one query >50% imps at pos ≥10) and
+    // the two-queries-at-49%+47% case both fall out naturally.
+    const hopelessQueries = computeHopelessQueries(c.cluster.members, totalImpressions);
 
     out.push({
       page: c.page,
@@ -845,6 +1173,9 @@ function buildCoverageInputs(
       ahrefsIntentPrior: c.aggregates.ahrefs_intent_prior,
       members,
       anchors,
+      anchorAioPresence,
+      clusterAioImpressionShare,
+      hopelessQueries,
       avgPosition: c.aggregates.avg_position,
       weightedCtrPct: c.aggregates.weighted_ctr_pct,
       expectedCtrPct: c.aggregates.expected_ctr_pct,
@@ -853,15 +1184,229 @@ function buildCoverageInputs(
   return out;
 }
 
-/** Collapse member-level competing_pages into a {query: [pages]} object for jsonb storage. */
-function buildCannibalOverlap(members: CoverageMemberSignal[]): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
+/**
+ * Identify "hopeless" queries — pos ≥10 members that, by impression weight,
+ * dominate the cluster's headline CTR-vs-expected gap. The classifier uses
+ * this list to forbid snippet_ctr when the apparent gap is structural (no
+ * snippet rewrite moves CTR at pos 11 on a head term).
+ *
+ * Algorithm: sort members by impressions desc. Take those at pos ≥10 in
+ * order; stop after the first one whose cumulative impression share crosses
+ * 50%. Returns [] when no pos≥10 query (or combination of pos≥10 queries
+ * surveyed in impression-rank order) reaches the threshold.
+ */
+function computeHopelessQueries(
+  members: ClusterMember<EmbeddedQuery>[],
+  totalImpressions: number,
+): CoverageInput["hopelessQueries"] {
+  if (totalImpressions <= 0) return [];
+  const sorted = members
+    .filter((m) => (m.source.impressions ?? 0) > 0 && m.source.position != null)
+    .sort((a, b) => (b.source.impressions ?? 0) - (a.source.impressions ?? 0));
+
+  const out: CoverageInput["hopelessQueries"] = [];
+  let cumShare = 0;
+  for (const m of sorted) {
+    const pos = m.source.position!;
+    const imp = m.source.impressions ?? 0;
+    if (pos < 10) continue;
+    const share = imp / totalImpressions;
+    out.push({
+      query: m.query,
+      impressions: imp,
+      impression_share: Math.round(share * 1000) / 1000,
+      position: Math.round(pos * 10) / 10,
+      expected_ctr_at_pos: Math.round(expectedCtr(pos) * 10000) / 10000,
+    });
+    cumShare += share;
+    if (cumShare > 0.5) break;
+  }
+  return cumShare > 0.5 ? out : [];
+}
+
+/**
+ * Collapse member-level competing_pages into a `{query: CompetingPage[]}` object
+ * for jsonb storage. Each entry now carries `wins` annotations alongside the
+ * URL — the dashboard reader (app/(dashboard)/seo/actions.ts) is shape-tolerant
+ * so existing rows with the legacy `string[]` shape still render correctly.
+ */
+function buildCannibalOverlap(members: CoverageMemberSignal[]): Record<string, CompetingPage[]> {
+  const out: Record<string, CompetingPage[]> = {};
   for (const m of members) {
     if (m.competing_pages && m.competing_pages.length > 0) {
       out[m.query] = m.competing_pages;
     }
   }
   return out;
+}
+
+/**
+ * Pre-compute the union of every cluster's deterministic anchor queries so
+ * the SERP fetch can cover them in one batched call. This is the same
+ * `rankAnchorQueries` set the classifier itself will see per cluster — we
+ * just gather them up-front so the SERP cache primes correctly.
+ */
+function collectAnchorQueries(flatCandidates: PageCandidate[]): string[] {
+  const seen = new Set<string>();
+  for (const c of flatCandidates) {
+    const candidates: AnchorCandidate[] = c.cluster.members.map((m) => ({
+      query: m.query,
+      position: m.source.position,
+      volume: m.source.volume,
+      kd: m.source.kd,
+    }));
+    for (const a of rankAnchorQueries(candidates, 5)) seen.add(a.query);
+  }
+  return [...seen];
+}
+
+/** (page, query) → opportunity row index for fast win-lookup. */
+function buildOppByPageQuery(
+  opps: SeoOpportunityRow[],
+): Map<string, Map<string, SeoOpportunityRow>> {
+  const out = new Map<string, Map<string, SeoOpportunityRow>>();
+  for (const o of opps) {
+    let inner = out.get(o.page);
+    if (!inner) { inner = new Map(); out.set(o.page, inner); }
+    inner.set(o.query, o);
+  }
+  return out;
+}
+
+/**
+ * For an anchor query, find the lowest-position HearingTracker URL in the
+ * live SERP that is NOT this cluster's page and ranks ≤10. That URL is the
+ * external canonical: optimizing THIS page for this anchor would cannibalize
+ * its CTR. Returns undefined when no such URL exists (this page is either
+ * the canonical itself, or no HT page is winning the query).
+ *
+ * Reuses normalizeUrlForMatch so SERP URLs and our www-host paths compare
+ * apples-to-apples (no scheme/trailing-slash drift).
+ */
+function findExternalCanonical(
+  query: string,
+  currentPage: string,
+  serpDataByQuery: Map<string, SerpData>,
+  anchorKd: number | null,
+  anchorVolume: number | null,
+): NonNullable<CoverageAnchor["external_canonical"]> | undefined {
+  const serp = serpDataByQuery.get(query);
+  if (!serp || serp.top_organic.length === 0) return undefined;
+  const currentPageKey = pathToSerpUrlKey(currentPage);
+  // top_organic is rank-ascending already, but be defensive — find lowest-rank
+  // HT result that isn't this page and is at rank ≤10.
+  let best: { url: string; rank: number } | undefined;
+  for (const r of serp.top_organic) {
+    if (r.rank > 10) continue;
+    const key = normalizeUrlForMatch(r.url);
+    if (key === currentPageKey) continue;
+    // Match HT host only — don't treat external sites as canonicals.
+    if (!key.startsWith(SITE_HOSTNAME)) continue;
+    if (!best || r.rank < best.rank) {
+      best = { url: r.url, rank: r.rank };
+    }
+  }
+  if (!best) return undefined;
+  return {
+    url: best.url,
+    position: best.rank,
+    kd: anchorKd,
+    volume: anchorVolume,
+  };
+}
+
+function pathToSerpUrlKey(path: string): string {
+  // Paths are stored without the host; reconstruct the canonical full URL so
+  // we can compare against DataForSEO's full-URL SERP results.
+  const url = path.startsWith("http") ? path : `https://${SITE_HOSTNAME}${path}`;
+  return normalizeUrlForMatch(url);
+}
+
+/**
+ * SERP-verify a list of GSC-flagged competing paths for a single query, then
+ * annotate each survivor with the queries it currently wins (best on-site
+ * position AND pos ≤ 10) within this cluster's member set.
+ *
+ * Conservative on missing data: when no SERP is available for the query we
+ * drop the cannibalization signal entirely rather than fall back to GSC noise.
+ * The earlier shape (paths only, no SERP gate) was the source of false-positive
+ * cannibalization that prompted this change.
+ */
+function verifyCompetingPages(args: {
+  candidatePaths: string[];
+  query: string;
+  serpDataByQuery: Map<string, SerpData>;
+  oppByPageQuery: Map<string, Map<string, SeoOpportunityRow>>;
+  clusterMemberQueries: string[];
+  queryToPages: Map<string, Set<string>>;
+}): CompetingPage[] {
+  const serp = args.serpDataByQuery.get(args.query);
+  if (!serp || serp.top_organic.length === 0) return [];
+
+  const serpUrlKeys = new Set(
+    serp.top_organic.map((r) => normalizeUrlForMatch(r.url)),
+  );
+
+  const verifiedPaths = args.candidatePaths.filter((p) => {
+    // Forum/shop subdomains are stored as full URLs by the GSC sync; the
+    // www-only sync produces "/path" entries. Either way, match by SERP URL.
+    return serpUrlKeys.has(pathToSerpUrlKey(p));
+  });
+
+  return verifiedPaths.map((url) => {
+    const wins = computeUrlWinsInCluster({
+      url,
+      clusterMemberQueries: args.clusterMemberQueries,
+      oppByPageQuery: args.oppByPageQuery,
+      queryToPages: args.queryToPages,
+    });
+    return wins.length > 0 ? { url, wins } : { url };
+  });
+}
+
+/**
+ * For a competing URL, find queries WITHIN the current cluster where this URL
+ * is the top-ranked HearingTracker page AND ranks at pos ≤ 10. These are the
+ * queries the classifier must NOT recommend de-targeting away — the URL is
+ * actively winning them.
+ */
+function computeUrlWinsInCluster(args: {
+  url: string;
+  clusterMemberQueries: string[];
+  oppByPageQuery: Map<string, Map<string, SeoOpportunityRow>>;
+  queryToPages: Map<string, Set<string>>;
+}): NonNullable<CompetingPage["wins"]> {
+  const wins: NonNullable<CompetingPage["wins"]> = [];
+  const urlOpps = args.oppByPageQuery.get(args.url);
+  if (!urlOpps) return wins;
+
+  for (const q of args.clusterMemberQueries) {
+    const compOpp = urlOpps.get(q);
+    if (!compOpp || compOpp.position == null || compOpp.position > 10) continue;
+
+    // Confirm this URL has the BEST on-site position for `q`. If a stronger
+    // sibling outranks it, the win belongs to the sibling, not this URL.
+    const allPages = args.queryToPages.get(q);
+    if (!allPages) continue;
+    let bestPage: string | null = null;
+    let bestPos = Infinity;
+    for (const pp of allPages) {
+      const pos = args.oppByPageQuery.get(pp)?.get(q)?.position;
+      if (pos != null && pos < bestPos) {
+        bestPos = pos;
+        bestPage = pp;
+      }
+    }
+    if (bestPage !== args.url) continue;
+
+    wins.push({
+      query: q,
+      position: compOpp.position,
+      kd: compOpp.kd,
+      volume: compOpp.volume,
+    });
+  }
+  return wins;
 }
 
 // Type re-export so `import { meanCentroid } from "@/lib/seo/cluster"` isn't

@@ -11,8 +11,14 @@ import {
   triggerSyncJob,
   getActiveSyncJob,
   getSyncJob,
+  getSynthesisFindingsForPage,
+  getSynthesisFindings,
 } from "@/app/(dashboard)/seo/actions";
-import type { SeoOppStatus, SeoSyncJob } from "@/app/(dashboard)/seo/types";
+import type {
+  SeoOppStatus,
+  SeoSyncJob,
+  SeoSynthesisKindKey,
+} from "@/app/(dashboard)/seo/types";
 
 export function useSeoPages() {
   return useQuery({
@@ -26,6 +32,32 @@ export function useSeoOpportunities(page: string | null) {
     queryKey: page ? queryKeys.seo.opportunities(page) : ["seo", "opportunities", "none"],
     queryFn: () => (page ? getSeoOpportunities(page) : Promise.resolve([])),
     enabled: !!page,
+  });
+}
+
+/**
+ * Phase 1C — site-wide synthesis findings tied to a single page (either as
+ * scope or as recommended target). Backs the "Site-wide context" callout
+ * in the per-page drilldown.
+ */
+export function useSynthesisFindingsForPage(page: string | null) {
+  return useQuery({
+    queryKey: page
+      ? queryKeys.seo.synthesisForPage(page)
+      : ["seo", "synthesis", "page", "none"],
+    queryFn: () => (page ? getSynthesisFindingsForPage(page) : Promise.resolve([])),
+    enabled: !!page,
+  });
+}
+
+/**
+ * All open synthesis findings, optionally filtered by kind. Backs the
+ * /seo/site portfolio dashboard.
+ */
+export function useSynthesisFindings(kind?: SeoSynthesisKindKey, limit?: number) {
+  return useQuery({
+    queryKey: queryKeys.seo.synthesisAll(kind),
+    queryFn: () => getSynthesisFindings({ kind, limit }),
   });
 }
 

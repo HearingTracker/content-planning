@@ -15,17 +15,21 @@ export type PhaseKey =
   | "match"
   | "classify"
   | "upsert"
+  | "rank_snapshot"
+  | "synthesize"
   | "done";
 
 export const PHASE_LABELS: Record<PhaseKey, string> = {
-  gsc:      "Pulling GSC + earnings + page metadata",
-  embed:    "Embedding queries",
-  cluster:  "Clustering per page",
-  label:    "Labeling clusters",
-  match:    "Matching against existing clusters",
-  classify: "Classifying coverage per cluster",
-  upsert:   "Writing to database",
-  done:     "Done",
+  gsc:           "Pulling GSC + earnings + page metadata",
+  embed:         "Embedding queries",
+  cluster:       "Clustering per page",
+  label:         "Labeling clusters",
+  match:         "Matching against existing clusters",
+  classify:      "Classifying coverage per cluster",
+  upsert:        "Writing to database",
+  rank_snapshot: "Snapshotting rank history",
+  synthesize:    "Synthesizing site-wide insights",
+  done:          "Done",
 };
 
 const LOG_TAIL_MAX = 50;

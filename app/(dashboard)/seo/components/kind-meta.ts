@@ -5,18 +5,26 @@
 // seed when kinds change.
 
 import {
+  Bot,
+  Calendar,
   CheckCircle2,
+  Compass,
   CornerUpRight,
+  Crown,
   ExternalLink,
+  Link as LinkIcon,
   Loader,
   Plus,
   RefreshCw,
+  ShieldCheck,
   Sparkles,
+  Tags,
+  Trash2,
   Trophy,
   Type,
   type LucideIcon,
 } from "lucide-react";
-import type { SeoOppKindKey } from "../types";
+import type { SeoOppKindKey, SeoSynthesisKindKey } from "../types";
 
 type Tone = "amber" | "blue" | "emerald" | "rose" | "slate";
 
@@ -156,10 +164,106 @@ export const KIND_META: Record<SeoOppKindKey, KindMeta> = {
     Icon: CornerUpRight,
     tone: TONE_CLASSES.slate,
   },
+  ai_overview_loss: {
+    key: "ai_overview_loss",
+    displayLabel: "AI Overview is taking the click",
+    shortLabel: "AIO",
+    actionVerb: "rewrite for AIO citation",
+    description: "Page ranks but the AI Overview is winning the click — passage-level rewrite needed.",
+    Icon: Bot,
+    tone: TONE_CLASSES.amber,
+  },
 };
 
 /** Defensive lookup for unknown kind keys (defensive against DB drift). */
 export function getKindMeta(key: string | null | undefined): KindMeta {
   if (key && key in KIND_META) return KIND_META[key as SeoOppKindKey];
   return KIND_META.needs_review;
+}
+
+// ─── Phase 1C: site-wide synthesis kinds ───────────────────────────────────
+// Parallel taxonomy to KIND_META, keyed by SeoSynthesisKindKey. Mirrors
+// cp_seo_synthesis_kinds rows. Used by the per-page "Site-wide context"
+// callout and the /seo/site portfolio dashboard.
+
+export type SynthesisKindMeta = {
+  key: SeoSynthesisKindKey;
+  displayLabel: string;
+  shortLabel: string;
+  description: string;
+  Icon: LucideIcon;
+  tone: ToneClasses;
+};
+
+export const SYNTHESIS_KIND_META: Record<SeoSynthesisKindKey, SynthesisKindMeta> = {
+  fully_ceded_page: {
+    key: "fully_ceded_page",
+    displayLabel: "Page may be redundant",
+    shortLabel: "Redundant",
+    description: "Most anchors on this page are already won by a different HearingTracker URL.",
+    Icon: Trash2,
+    tone: TONE_CLASSES.rose,
+  },
+  undesignated_topic: {
+    key: "undesignated_topic",
+    displayLabel: "Pick a winner",
+    shortLabel: "Designate",
+    description: "Multiple HearingTracker pages compete just outside top 10 — none owns the SERP yet.",
+    Icon: Crown,
+    tone: TONE_CLASSES.amber,
+  },
+  orphan_target: {
+    key: "orphan_target",
+    displayLabel: "No HT page ranks",
+    shortLabel: "Orphan",
+    description: "Topically adjacent query with high search volume where no HearingTracker URL ranks in top 30.",
+    Icon: Compass,
+    tone: TONE_CLASSES.amber,
+  },
+  aio_no_citation: {
+    key: "aio_no_citation",
+    displayLabel: "AIO with no HT citation",
+    shortLabel: "AIO Gap",
+    description: "AI Overview shows for this query but no HearingTracker URL is cited as a source.",
+    Icon: Bot,
+    tone: TONE_CLASSES.blue,
+  },
+  // ─── Phase 1D blind-spot kinds ──────────────────────────────────────────
+  authority_capped_serp: {
+    key: "authority_capped_serp",
+    displayLabel: "Authority-capped SERP",
+    shortLabel: "Authority",
+    description: "Top 5 dominated by .gov/.edu/Mayo/NIH — the rank ceiling here is link authority, not on-page anything.",
+    Icon: ShieldCheck,
+    tone: TONE_CLASSES.slate,
+  },
+  brand_cannibalization: {
+    key: "brand_cannibalization",
+    displayLabel: "Brand cannibalization",
+    shortLabel: "Brand",
+    description: "Multiple HearingTracker pages compete on a branded query — the brand-specific page should win.",
+    Icon: Tags,
+    tone: TONE_CLASSES.rose,
+  },
+  freshness: {
+    key: "freshness",
+    displayLabel: "Stale content",
+    shortLabel: "Stale",
+    description: "Outdated year-stamp in title, content untouched in over a year, or rank declining.",
+    Icon: Calendar,
+    tone: TONE_CLASSES.amber,
+  },
+  internal_link_gap: {
+    key: "internal_link_gap",
+    displayLabel: "No inbound HT links",
+    shortLabel: "Linkless",
+    description: "Page ranks top-3 for a high-volume query but no other HearingTracker page links to it.",
+    Icon: LinkIcon,
+    tone: TONE_CLASSES.blue,
+  },
+};
+
+export function getSynthesisKindMeta(key: string | null | undefined): SynthesisKindMeta | null {
+  if (key && key in SYNTHESIS_KIND_META) return SYNTHESIS_KIND_META[key as SeoSynthesisKindKey];
+  return null;
 }

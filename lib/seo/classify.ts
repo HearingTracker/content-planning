@@ -37,6 +37,21 @@ export type PageMeta = {
   bodyText: string;
   titleTokens: Set<string>;
   bodyTokens: Set<string>;
+  /**
+   * Editor-managed last-update date pulled from the n4-article Storyblok
+   * block's `updated` field (with `published` fallback). Only bumped on
+   * meaningful updates, so it's a higher-signal staleness indicator than
+   * the API-level `published_at`. Null for non-Storyblok pages or pages
+   * without an n4-article block.
+   */
+  contentModifiedAt?: string | null;
+  /**
+   * Distinct HearingTracker-internal paths linked-to from this page's body.
+   * Extracted from raw HTML before stripHtml() runs (anchor hrefs are lost
+   * once HTML is stripped). Synthesizer inverts this graph in-memory to
+   * compute inbound link counts for the internal_link_gap detector.
+   */
+  outboundInternalLinks?: string[];
 };
 
 export type KeywordKind = "primary" | "supporting" | "secondary";
