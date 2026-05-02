@@ -58,33 +58,44 @@ export function SeoPageDrilldown({
             <SheetHeader className="bg-background border-b px-6 pt-6 pb-5 gap-3">
               <div className="flex items-start gap-3 pr-10">
                 <div className="min-w-0 flex-1">
-                  <SheetTitle className="font-mono text-base text-foreground tracking-tight">
+                  <SheetTitle className="text-foreground text-lg font-semibold leading-tight tracking-tight">
+                    {page.page_title || "(no title)"}
+                  </SheetTitle>
+                  <SheetDescription asChild>
                     <a
                       href={`https://www.hearingtracker.com${page.page}`}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 hover:underline decoration-1 underline-offset-4"
+                      className="text-muted-foreground mt-1 inline-flex items-center gap-1.5 font-mono text-[12px] hover:text-foreground hover:underline decoration-1 underline-offset-4"
                     >
                       {page.page}
-                      <ExternalLink className="h-3.5 w-3.5 opacity-60" />
+                      <ExternalLink className="h-3 w-3 opacity-60" />
                     </a>
-                  </SheetTitle>
-                  <SheetDescription className="text-foreground/80 mt-1 text-[13px] leading-snug">
-                    {page.page_title || "(no title)"}
                   </SheetDescription>
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-px overflow-hidden rounded-md border bg-border">
-                <Stat
-                  label="Earnings · 90d"
-                  value={`$${Math.round(page.earnings_90d).toLocaleString()}`}
-                />
-                <Stat label="Conversions · 90d" value={String(page.conversions_90d)} />
-                <Stat label="Source" value={page.meta_source ?? "unknown"} mono />
+              <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
+                <span>
+                  <span className="text-foreground font-semibold tabular-nums">
+                    ${Math.round(page.earnings_90d).toLocaleString()}
+                  </span>{" "}
+                  earnings
+                </span>
+                <span className="opacity-40">·</span>
+                <span>
+                  <span className="text-foreground font-semibold tabular-nums">
+                    {page.conversions_90d}
+                  </span>{" "}
+                  conversion{page.conversions_90d === 1 ? "" : "s"}
+                </span>
+                <span className="opacity-40">·</span>
+                <span className="font-mono text-[11px]">{page.meta_source ?? "unknown"}</span>
+                <span className="opacity-40">·</span>
+                <span className="opacity-75">90d</span>
               </div>
 
-              {(opps?.length ?? 0) > 0 && (
+              {(opps?.length ?? 0) > 1 && (
                 <div className="flex flex-wrap items-center gap-1.5 pt-1">
                   <span className="text-muted-foreground text-[11px] uppercase tracking-wider">
                     At a glance
@@ -310,22 +321,6 @@ function detailForTarget(f: SeoSynthesisFinding): string {
   return getSynthesisKindMeta(f.kind)?.description ?? "";
 }
 
-function Stat({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="bg-background px-3 py-2.5">
-      <div className="text-muted-foreground text-[10px] uppercase tracking-wider">{label}</div>
-      <div
-        className={cn(
-          "text-foreground mt-0.5 text-base font-semibold tabular-nums",
-          mono && "font-mono text-sm font-medium tracking-tight",
-        )}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
 // ─── Cluster card ──────────────────────────────────────────────────────────
 
 // Anchor set for badge intersection. Prefer start_with (LLM-curated subset
@@ -389,7 +384,10 @@ function ClusterCard({
     >
       <span className={cn("absolute inset-y-0 left-0 w-1", meta.tone.stripe)} aria-hidden />
 
-      {/* Header: action label + cluster headline + status */}
+      {/* Header — headline owns the row; kind/rank/KD ride below as a muted
+          eyebrow so the editor reads the title first. Status select anchors
+          the right rail; the priority score moved to the footer alongside
+          other reference fields (it's reference info, not an action). */}
       <header className="flex items-start justify-between gap-3 px-5 pt-4 pb-3">
         <div className="flex items-start gap-3 min-w-0">
           <div
@@ -401,13 +399,11 @@ function ClusterCard({
             <Icon className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
-                  meta.tone.chip,
-                )}
-              >
+            <h3 className="text-foreground text-lg font-semibold leading-tight tracking-tight">
+              {o.cluster_label}
+            </h3>
+            <div className="mt-1.5 flex items-center gap-x-2 gap-y-1 flex-wrap">
+              <span className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wider">
                 {meta.displayLabel}
               </span>
               {avgPos != null && <PositionPill position={avgPos} />}
@@ -416,28 +412,39 @@ function ClusterCard({
               )}
               {o.is_branded && o.brand && <BrandTag brand={o.brand} />}
             </div>
-            <h3 className="text-foreground mt-2 text-lg font-semibold leading-tight tracking-tight">
-              {o.cluster_label}
-            </h3>
           </div>
         </div>
 
-        <div className="shrink-0 flex flex-col items-end gap-1.5">
+        <div className="shrink-0">
           <StatusSelect id={o.id} value={o.status} />
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="text-muted-foreground inline-flex items-center gap-1 text-[10px] tabular-nums cursor-help">
-                score {o.score}
-                <Info className="h-3 w-3 opacity-60" />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="left" className="max-w-xs">
-              Internal priority score blending impressions, position gap, keyword difficulty,
-              and revenue. Higher = work on this first.
-            </TooltipContent>
-          </Tooltip>
         </div>
       </header>
+
+      <ActionabilityNotice
+        actionability={o.actionability}
+        guardrails={o.guardrails}
+        confidence={o.confidence}
+      />
+
+      {/* Recommendation — surfaced near the top so the editor's first read is
+          the actual instruction. Low-confidence warning sits beneath; the
+          green "Ready edit" banner above auto-suppresses when confidence is
+          low so green-go and amber-stop don't stack on the same prose. */}
+      {o.recommendation ? (
+        <div className="px-5 py-3">
+          <p className="text-foreground/90 text-[13px] leading-relaxed">
+            <RecommendationText text={o.recommendation} />
+          </p>
+          {o.confidence != null && o.confidence < 0.6 && (
+            <p className="text-amber-700 mt-1 inline-flex items-center gap-1 text-[11px]">
+              <AlertTriangle className="h-3 w-3" />
+              Low confidence ({Math.round(o.confidence * 100)}%) — review before acting.
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="text-foreground/90 px-5 py-3 text-[13px] leading-relaxed">{meta.description}</p>
+      )}
 
       {/* Member queries — start_with anchors pinned & highlighted, rest
           collapsed past a soft cap. start_with is the LLM-curated subset
@@ -451,37 +458,9 @@ function ClusterCard({
         />
       )}
 
-      {anchorFindings.length > 0 && (
-        <ClusterFindingsBadgeRow
-          findings={anchorFindings}
-          currentPage={currentPage}
-        />
-      )}
-
-      {/* LLM recommendation (1B) when present, else neutral kind blurb. */}
-      {o.recommendation ? (
-        <div className="px-5">
-          <p className="text-foreground/90 text-[13px] leading-relaxed">
-            <RecommendationText text={o.recommendation} />
-          </p>
-          {o.confidence != null && o.confidence < 0.6 && (
-            <p className="text-amber-700 mt-1 inline-flex items-center gap-1 text-[11px]">
-              <AlertTriangle className="h-3 w-3" />
-              Low confidence ({Math.round(o.confidence * 100)}%) — review before acting.
-            </p>
-          )}
-        </div>
-      ) : (
-        <p className="text-foreground/90 px-5 text-[13px] leading-relaxed">{meta.description}</p>
-      )}
-
-      {/* Cannibalization callout */}
-      {o.cannibal_pages.length > 0 && (
-        <CannibalBlock pages={o.cannibal_pages} />
-      )}
-
-      {/* Aggregate metrics */}
-      <div className="mx-5 mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* Aggregate metrics — borderless strip; the cluster card already
+          provides the container, so nested tile borders read as box-in-box. */}
+      <div className="mx-5 mt-3 grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-4">
         <Metric
           label="Impressions / mo"
           value={totalImp.toLocaleString()}
@@ -512,9 +491,10 @@ function ClusterCard({
         />
       </div>
 
-      {/* Missed clicks insight when significant */}
+      {/* Missed clicks insight — borderless prose so it reads as a footnote
+          to the metrics strip directly above, not as a competing callout. */}
       {missedClicks > 5 && (
-        <div className="mx-5 mt-3 flex items-start gap-2 rounded-md border border-dashed border-amber-300/60 bg-amber-50/60 px-3 py-2 text-[12px] leading-snug">
+        <div className="mx-5 mt-2 flex items-start gap-1.5 text-[12px] leading-snug">
           <Sparkles className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
           <span className="text-amber-900/90">
             Roughly{" "}
@@ -523,6 +503,18 @@ function ClusterCard({
             ranking.
           </span>
         </div>
+      )}
+
+      {anchorFindings.length > 0 && (
+        <ClusterFindingsBadgeRow
+          findings={anchorFindings}
+          currentPage={currentPage}
+        />
+      )}
+
+      {/* Cannibalization callout */}
+      {o.cannibal_pages.length > 0 && (
+        <CannibalBlock pages={o.cannibal_pages} />
       )}
 
       {/* Pending-guidance footer — only when 1B classification hasn't run yet. */}
@@ -536,7 +528,7 @@ function ClusterCard({
         </div>
       )}
 
-      {/* Footer: meta */}
+      {/* Footer — reference fields plus right-aligned priority score. */}
       <footer className="text-muted-foreground mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-zinc-100 px-5 py-2.5 text-[11px]">
         {o.canonical_query && (
           <span>
@@ -549,17 +541,29 @@ function ClusterCard({
         {o.match_decision === "review" && (
           <span className="text-amber-700">match flagged for review</span>
         )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="ml-auto inline-flex items-center gap-1 tabular-nums cursor-help">
+              score {o.score}
+              <Info className="h-3 w-3 opacity-60" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-xs">
+            Internal priority score blending impressions, position gap, keyword difficulty,
+            and revenue. Higher = work on this first.
+          </TooltipContent>
+        </Tooltip>
       </footer>
     </article>
   );
 }
 
 // Compact "heads up" row tying cluster anchors to site-wide synthesis
-// findings. Sits above the cluster's recommendation prose so the editor
-// reads the prose with the SERP-structural caveats already in mind. When
-// the finding's canonical target is a different HT page, the chip shows
-// "→ /that-page" — that's the cross-page mismatch the per-cluster
-// classifier could not see when it wrote its prose.
+// findings — surfaces SERP-structural caveats (authority caps, AIO
+// suppression, brand cannibalization) the per-cluster classifier could
+// not see when it wrote its prose. When the finding's canonical target
+// is a different HT page, the chip shows "→ /that-page" so the editor
+// sees the cross-page mismatch.
 function ClusterFindingsBadgeRow({
   findings,
   currentPage,
@@ -610,6 +614,59 @@ function ClusterFindingsBadgeRow({
           </Tooltip>
         );
       })}
+    </div>
+  );
+}
+
+function ActionabilityNotice({
+  actionability,
+  guardrails,
+  confidence,
+}: {
+  actionability: SeoOpportunity["actionability"];
+  guardrails: string[];
+  confidence: number | null;
+}) {
+  // Suppress the green "Ready edit" reassurance when confidence is low —
+  // stacking it above the amber low-confidence warning beneath the prose
+  // sends contradicting signals on the same recommendation.
+  if (actionability === "ready" && confidence != null && confidence < 0.6) return null;
+  if (actionability === "ready" && guardrails.length === 0) return null;
+
+  const config = {
+    ready: {
+      label: "Ready edit",
+      text: "Passed classifier guardrails.",
+      className: "border-emerald-200/70 bg-emerald-50/60 text-emerald-900",
+    },
+    review: {
+      label: "Review gate",
+      text: "Do not assign directly until an editor validates the recommendation.",
+      className: "border-amber-200/70 bg-amber-50/70 text-amber-950",
+    },
+    monitor: {
+      label: "Monitor only",
+      text: "No article edit is recommended for this cluster.",
+      className: "border-emerald-200/70 bg-emerald-50/60 text-emerald-900",
+    },
+    blocked: {
+      label: "Do not target here",
+      text: "This intent should be handled by another page.",
+      className: "border-slate-200/80 bg-slate-50 text-slate-800",
+    },
+  }[actionability];
+
+  const notes = guardrails.slice(0, 2);
+
+  return (
+    <div className={cn("mx-5 mt-3 rounded-md border px-3 py-2 text-[12px] leading-snug", config.className)}>
+      <div className="font-medium">{config.label}</div>
+      <div className="mt-0.5">
+        {config.text}
+        {notes.length > 0 && (
+          <span className="opacity-85"> {notes.join("; ")}.</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -767,10 +824,10 @@ function QueryChipsBlock({
   const anchorSet = new Set(anchors);
   const naturallyVisible = sorted.filter((q) => {
     if (anchorSet.has(q)) return true;
+    if (externalCanonicals[q]) return true;
     return coverageTier(topicCoverage[q]) !== "covered";
   });
-  const visibleCount = expanded ? sorted.length : naturallyVisible.length;
-  const visible = sorted.slice(0, visibleCount);
+  const visible = expanded ? sorted : naturallyVisible;
   const hidden = sorted.length - visible.length;
 
   return (
@@ -927,11 +984,12 @@ function CannibalBlock({ pages }: { pages: string[] }) {
 }
 
 // Path-like substrings inside the recommendation prose become live links to
-// the production site. Pattern: a leading slash + lowercase alphanumeric/hyphen
-// segments separated by slashes (no trailing slash, no query string). We keep
-// it conservative so commas, periods, and quotes adjacent to the path don't
-// get swallowed.
-const PATH_RE = /\/[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)+/g;
+// the production site. A path must either (a) have a hyphen in its first
+// segment — real slugs almost always do, e.g. /affordable-hearing-aids — or
+// (b) have two or more segments, e.g. /hearing-aids/walmart. This excludes
+// ambiguous /word matches (a stray "/seo" reference or "/10" in "8/10")
+// without losing canonical single-segment slugs.
+const PATH_RE = /\/[a-z0-9]+-[a-z0-9-]+(?:\/[a-z0-9][a-z0-9-]*)*|\/[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)+/g;
 
 function RecommendationText({ text }: { text: string }) {
   const parts: Array<string | { kind: "path"; href: string }> = [];
@@ -977,7 +1035,7 @@ function Metric({
   delta?: { expected: string; good: boolean } | null;
 }) {
   return (
-    <div className="rounded-md border bg-background px-3 py-2">
+    <div>
       <Tooltip>
         <TooltipTrigger asChild>
           <div className="text-muted-foreground inline-flex items-center gap-1 text-[10px] uppercase tracking-wider cursor-help">
@@ -989,7 +1047,7 @@ function Metric({
           {help}
         </TooltipContent>
       </Tooltip>
-      <div className="text-foreground mt-0.5 text-sm font-semibold tabular-nums leading-tight">
+      <div className="text-foreground mt-0.5 text-base font-semibold tabular-nums leading-tight">
         {value}
       </div>
       {delta && (

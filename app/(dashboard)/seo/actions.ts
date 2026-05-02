@@ -47,7 +47,7 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
         ahrefs_intent_prior, member_count, total_impressions, total_volume,
         total_missed_clicks, weighted_ctr_pct, expected_ctr_pct, avg_position,
         min_kd, max_kd, match_decision, match_score,
-        coverage_recommendation, coverage_confidence,
+        coverage_recommendation, coverage_confidence, coverage_input_digest,
         anchor_queries, start_with_queries, anchor_external_canonicals,
         cannibal_overlap,
         cp_seo_query_findings ( query, topic_coverage_score )
@@ -93,6 +93,10 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
       match_score: number | null;
       coverage_recommendation: string | null;
       coverage_confidence: number | string | null;
+      coverage_input_digest: {
+        editor_actionability?: string;
+        guardrails?: unknown;
+      } | null;
       anchor_queries: { query: string; score: number }[] | null;
       start_with_queries: string[] | null;
       anchor_external_canonicals:
@@ -118,7 +122,7 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
     // start_with_queries is the LLM-curated highlight subset, persisted
     // NOT NULL DEFAULT '[]'. An empty array is a positive "nothing to
     // attack" signal (correct for coverage_strong, wrong_page, cede, and
-    // ai_overview_loss whose AIO anchors all carry external canonicals) —
+    // review-gated rows whose only AIO anchors carry external canonicals) —
     // do NOT fall back to highlighting every anchor in that case.
     const startWith = Array.isArray(row.cluster.start_with_queries)
       ? row.cluster.start_with_queries.filter((q): q is string => typeof q === "string")
@@ -145,6 +149,24 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
         }
       }
     }
+    const rawGuardrails = row.cluster.coverage_input_digest?.guardrails;
+    const guardrails = Array.isArray(rawGuardrails)
+      ? rawGuardrails.filter((g): g is string => typeof g === "string")
+      : [];
+    const rawActionability = row.cluster.coverage_input_digest?.editor_actionability;
+    const actionability =
+      rawActionability === "ready" ||
+      rawActionability === "review" ||
+      rawActionability === "monitor" ||
+      rawActionability === "blocked"
+        ? rawActionability
+        : row.cluster.coverage_confidence != null && Number(row.cluster.coverage_confidence) < 0.6
+          ? "review"
+          : row.kind_text === "coverage_strong"
+            ? "monitor"
+            : row.kind_text === "cede" || row.kind_text === "wrong_page"
+              ? "blocked"
+              : "ready";
     return {
       id: row.id,
       page: row.page,
@@ -186,6 +208,8 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
       ),
       recommendation: row.cluster.coverage_recommendation,
       confidence: row.cluster.coverage_confidence != null ? Number(row.cluster.coverage_confidence) : null,
+      actionability,
+      guardrails,
       anchor_queries: anchors,
       start_with_queries: startWith,
       external_canonicals: externalCanonicals,

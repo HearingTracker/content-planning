@@ -109,6 +109,14 @@ export type SeoOpportunity = {
   // Phase 1B coverage classifier output
   recommendation: string | null;
   confidence: number | null;
+  /**
+   * Author-task readiness from coverage_input_digest. "ready" means the
+   * classifier passed deterministic guardrails; "review" means don't assign
+   * directly; "monitor"/"blocked" are non-edit outcomes.
+   */
+  actionability: "ready" | "review" | "monitor" | "blocked";
+  /** Short deterministic guardrail notes from the classifier audit. */
+  guardrails: string[];
   /** Top 3–5 anchor queries (deterministic LH-fruit ranking), in priority order. */
   anchor_queries: string[];
   /** LLM-curated subset of anchors to highlight first (excludes already-covered + ceded). Empty array is the LLM's positive "nothing to attack" signal — do NOT fall back to anchor_queries. */

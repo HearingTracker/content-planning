@@ -185,6 +185,12 @@ function OverviewHeader({
   activeKind: SeoOppKindKey | null;
   onToggleKind: (k: SeoOppKindKey) => void;
 }) {
+  // Hover state for the inline glossary line below the chips. Hover takes
+  // precedence over the active filter so the user can preview a kind without
+  // losing their current filter selection.
+  const [hoveredKind, setHoveredKind] = useState<SeoOppKindKey | null>(null);
+  const explainKind = hoveredKind ?? activeKind;
+
   const kindEntries = KIND_COUNT_FIELDS.map(({ key }) => ({
     key,
     n: summary.byKind[key] ?? 0,
@@ -346,36 +352,53 @@ function OverviewHeader({
                 const isActive = activeKind === key;
                 const isDimmed = activeKind != null && !isActive;
                 return (
-                  <Tooltip key={key}>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={() => onToggleKind(key)}
-                        aria-pressed={isActive}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
-                          meta.tone.chip,
-                          isDimmed && "opacity-40 hover:opacity-70",
-                          isActive &&
-                            "ring-2 ring-zinc-900 ring-offset-1 shadow-sm",
-                        )}
-                      >
-                        <meta.Icon className="h-3 w-3" />
-                        <span className="tabular-nums">{n}</span>
-                        <span className="opacity-90">
-                          {meta.shortLabel.toLowerCase()}
-                        </span>
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top" className="max-w-xs">
-                      <div className="font-medium mb-0.5">{meta.displayLabel}</div>
-                      <div className="text-xs opacity-90">{meta.description}</div>
-                    </TooltipContent>
-                  </Tooltip>
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => onToggleKind(key)}
+                    onMouseEnter={() => setHoveredKind(key)}
+                    onMouseLeave={() => setHoveredKind(null)}
+                    onFocus={() => setHoveredKind(key)}
+                    onBlur={() => setHoveredKind(null)}
+                    aria-pressed={isActive}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
+                      meta.tone.chip,
+                      isDimmed && "opacity-40 hover:opacity-70",
+                      isActive && "ring-2 ring-zinc-900 ring-offset-1 shadow-sm",
+                    )}
+                  >
+                    <meta.Icon className="h-3 w-3" />
+                    <span className="tabular-nums">{n}</span>
+                    <span className="opacity-90">{meta.shortLabel.toLowerCase()}</span>
+                  </button>
                 );
               })
             )}
           </div>
+
+          {/* Inline glossary — explains the hovered/active chip in plain
+              English. Min-height keeps the chip row from jumping when the
+              text appears/disappears. */}
+          {kindEntries.length > 0 && (
+            <div className="mt-2 min-h-[2.4em] text-[12px] leading-snug">
+              {explainKind ? (
+                <>
+                  <span className="font-medium text-foreground">
+                    {KIND_META[explainKind].displayLabel}:
+                  </span>{" "}
+                  <span className="text-muted-foreground">
+                    {KIND_META[explainKind].description}
+                  </span>
+                </>
+              ) : (
+                <span className="text-muted-foreground/70 italic">
+                  Each chip is one kind of edit needed across all open clusters — hover
+                  to see what it means, click to filter the table.
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -585,7 +608,17 @@ function PageRow({
 // ─── Kind breakdown bar ────────────────────────────────────────────────────
 
 function KindBreakdownBar({ p }: { p: SeoPage }) {
-  const segments = nonZeroKindCounts(p);
+  // Fallback for kinds not yet in KIND_COUNT_FIELDS (consolidate / cede /
+  // ai_overview_loss): if the per-kind columns sum to zero but the page has
+  // a top cluster classified as one of those kinds, surface it as a single
+  // segment so the row isn't self-contradictory ("no open clusters" shown
+  // next to a TOP line referencing one).
+  let segments = nonZeroKindCounts(p);
+  const openClusters = Number(p.open_clusters ?? 0);
+  if (segments.length === 0 && p.top_kind && openClusters > 0) {
+    segments = [{ key: p.top_kind, count: openClusters }];
+  }
+
   const total = segments.reduce((s, x) => s + x.count, 0);
   if (total === 0) {
     return (
@@ -594,54 +627,27 @@ function KindBreakdownBar({ p }: { p: SeoPage }) {
   }
 
   return (
-    <div>
-      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-zinc-100">
-        {segments.map((s) => {
-          const meta = KIND_META[s.key];
-          return (
-            <Tooltip key={s.key}>
-              <TooltipTrigger asChild>
-                <span
-                  className={cn(
-                    "h-full transition-opacity hover:opacity-80 cursor-help",
-                    meta.tone.stripe,
-                  )}
-                  style={{ width: `${(s.count / total) * 100}%` }}
-                  aria-label={`${s.count} ${meta.shortLabel}`}
-                />
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                {s.count} · {meta.displayLabel}
-              </TooltipContent>
-            </Tooltip>
-          );
-        })}
-      </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        {segments.map((s) => {
-          const meta = KIND_META[s.key];
-          return (
-            <Tooltip key={s.key}>
-              <TooltipTrigger asChild>
-                <span
-                  className={cn(
-                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium cursor-help",
-                    meta.tone.chip,
-                  )}
-                >
-                  <span className="tabular-nums">{s.count}</span>
-                  <span className="opacity-90">
-                    {s.count === 1 ? meta.shortLabel.toLowerCase() : `${meta.shortLabel.toLowerCase()}s`}
-                  </span>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-xs">
-                {meta.description}
-              </TooltipContent>
-            </Tooltip>
-          );
-        })}
-      </div>
+    <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-zinc-100">
+      {segments.map((s) => {
+        const meta = KIND_META[s.key];
+        return (
+          <Tooltip key={s.key}>
+            <TooltipTrigger asChild>
+              <span
+                className={cn(
+                  "h-full transition-opacity hover:opacity-80 cursor-help",
+                  meta.tone.stripe,
+                )}
+                style={{ width: `${(s.count / total) * 100}%` }}
+                aria-label={`${s.count} ${meta.shortLabel}`}
+              />
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              <span className="font-medium">{meta.displayLabel}</span> · {s.count}
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }

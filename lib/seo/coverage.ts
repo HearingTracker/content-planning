@@ -14,9 +14,11 @@
 //   • freshness — requires date signals the body-text snapshot doesn't
 //     carry; reserved for a follow-up date-aware pass.
 //
-// Model selection mirrors label.ts: SEO_COVERAGE_MODEL takes precedence,
-// then falls back to SEO_LABEL_MODEL so a single env can drive both. The
-// 'anthropic/' gateway prefix is stripped before handing to @ai-sdk/anthropic.
+// Model selection mirrors label.ts for the first pass: SEO_COVERAGE_MODEL
+// takes precedence, then falls back to SEO_LABEL_MODEL so a single env can
+// drive both. `SEO_COVERAGE_ESCALATION_MODEL` optionally enables a stronger
+// second pass for ambiguous/high-risk clusters. The 'anthropic/' gateway
+// prefix is stripped before handing to @ai-sdk/anthropic.
 
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
@@ -68,7 +70,7 @@ const CoverageSchema = z.object({
   start_with: z
     .array(z.string())
     .describe(
-      "1–3 anchor queries the editor should target FIRST. Pick from the anchor list. EXCLUDE any anchor the page already substantively covers AND any that should be ceded to a competing page. Empty array is valid for kind=coverage_strong, wrong_page, or cede (nothing to start with on this page).",
+      "1–3 actionable anchor queries the editor should target FIRST. Pick from the actionable anchor list. EXCLUDE any anchor the page already substantively covers AND any that should be ceded to a competing page. For ai_overview_loss, include the non-canonical AIO-suppressed anchor(s) that need source-friendly passage rewrites. Empty array is valid for kind=coverage_strong, wrong_page, or cede (nothing to start with on this page).",
     ),
 });
 
@@ -130,13 +132,35 @@ const CoverageSchema = z.object({
 //     concrete worked examples (a WRONG one matching the v12 failure and
 //     a RIGHT one demonstrating the deferral pattern) so the model
 //     learns the distinction by example, not by inference.
+// v14: move critical editor-safety rules out of prompt-only territory.
+//     The prompt now separates actionable anchors from canonical-owned
+//     deferrals and frames recommendations as HearingTracker editorial briefs
+//     (first-hand evidence, audiologist/lab support, decision factors). Code
+//     also validates canonical-anchor prose after the LLM call, preserves
+//     non-canonical AIO anchors in start_with, and downgrades low-confidence
+//     actionable advice to needs_review so authors do not receive weak tasks.
+//     Ambiguous/high-risk first-pass results can optionally escalate to a
+//     stronger coverage model via SEO_COVERAGE_ESCALATION_MODEL.
 export const COVERAGE_PROMPT_VERSION =
-  process.env.SEO_COVERAGE_PROMPT_VERSION ?? "v13";
+  process.env.SEO_COVERAGE_PROMPT_VERSION ?? "v14";
 
 function resolveModelId(): string {
   const raw = process.env.SEO_COVERAGE_MODEL ?? process.env.SEO_LABEL_MODEL;
   if (!raw) throw new Error("SEO_COVERAGE_MODEL or SEO_LABEL_MODEL must be set");
   return raw.replace(/^anthropic\//, "");
+}
+
+function resolveEscalationModelId(primaryModelId: string): string | null {
+  const explicit = process.env.SEO_COVERAGE_ESCALATION_MODEL;
+  if (explicit) return explicit.replace(/^anthropic\//, "");
+
+  // Sensible convention for Anthropic model families used in this repo
+  // (`claude-haiku-4-5` → `claude-sonnet-4-5`). If that derived model is not
+  // available, the escalation call is caught and the first-pass result is used.
+  if (/\bhaiku\b/i.test(primaryModelId)) {
+    return primaryModelId.replace(/\bhaiku\b/i, "sonnet");
+  }
+  return null;
 }
 
 const SYSTEM_PROMPT = `You are an SEO content strategist deciding what an editor should do about a cluster of search queries that a specific page is partially ranking for.
@@ -146,19 +170,25 @@ You will be given:
 - The page's body text (may be truncated).
 - A cluster of related Google Search Console queries the page ranks for in striking distance (positions 4–15), with TWO body-coverage signals per query: (a) "phrase×N in body" — exact-string occurrences of the literal query in the body text; (b) "topic NN%" — semantic max-cosine between the query embedding and the page's section embeddings (title, H1, every heading, body chunks). A topic score ≥55% means the page already has a section addressing that topic even if the literal phrase isn't there.
 - Aggregate ranking and CTR metrics for the cluster.
-- Anchor queries — the cluster's deterministically ranked top 3–5 low-hanging-fruit queries (high volume / low difficulty / close to top of striking distance). The recommendation MUST explicitly name at least one anchor query in the wording.
+- Anchor queries — the cluster's deterministically ranked top 3–5 low-hanging-fruit queries (high volume / low difficulty / close to top of striking distance), split into actionable anchors and canonical-owned deferrals. The recommendation MUST explicitly name at least one actionable anchor when any exists.
 - Cannibalization signals — for any cluster member that ALSO ranks in the LIVE top-20 organic SERP via another HearingTracker page, the competitor URL plus the queries that competitor currently wins (its strongest in-cluster rankings on this site). These are SERP-verified, not GSC-noise: a URL listed here is genuinely competing.
 - AI Overview signals — for each anchor query, whether the live SERP shows an AI Overview panel and whether THIS page is cited as one of the AIO sources. AI Overviews suppress organic CTR by ~30–60%; if a majority of cluster impressions sit on AIO-present queries, the standard expected-CTR baseline overstates the achievable ceiling. The cluster summary "AIO on N of M anchors (P% of cluster impressions)" tells you how dominant the AIO suppression is.
 - External canonical signals — for any anchor where a DIFFERENT HearingTracker URL ranks ≤10 in the live SERP, the anchor line carries an "EXTERNAL CANONICAL: <url> at #N" annotation. The canonical owner of the topic already exists on the site; recommending body additions, snippet changes, or start_with for that anchor on THIS page would cannibalize the canonical. Defer to the canonical instead.
 
-Your job: pick exactly one of these eight editorial states, and write 1–3 short sentences telling the editor what to do.
+Your job: pick exactly one of these eight editorial states, and write 1–3 short sentences telling the editor what to do. Optimize for meaningful HearingTracker article edits, not generic SEO activity.
+
+Editorial quality bar:
+- A useful edit adds decision-making value for hearing aid shoppers: audiologist/expert review, first-hand product testing, HearAdvisor/lab data, current price ranges, model/version differences, OTC vs prescription distinctions, fit/use-case guidance, return/warranty details, pros/cons, or a clear comparison table.
+- Do NOT recommend adding generic explanatory copy when the topic is already semantically present. If the page covers the topic, the edit should improve evidence, freshness, structure, or search-result clarity.
+- Do NOT treat AI Overview visibility as a separate hack. Use AIO only as a SERP diagnosis. The edit still has to make the page more useful and source-friendly for readers: direct answer, attributable facts, visible text, and structured evidence.
+- Prefer fewer, higher-confidence tasks. If the evidence is ambiguous, set confidence <0.6; the system will route it to review rather than assigning it as an author task.
 
 States (mutually exclusive — pick the BEST fit):
 1. coverage_strong — The page already meaningfully answers the cluster's intent. Recommend monitoring; don't recommend body changes.
 2. coverage_partial — The page touches on this topic but doesn't fully answer it. Recommend extending an existing section with the missing angles.
 3. intent_gap — The page barely addresses this cluster's intent. Recommend adding a NEW section (or sub-page) on the topic.
 4. wrong_page — The cluster is genuinely about a different topic that belongs on a different page (e.g. queries are about a different brand, product, or task that has no overlap with this page). Recommend writing elsewhere.
-5. snippet_ctr — The body genuinely answers the queries AND average rank is reasonable (≤8) AND there's at least one query with a real CTR gap that AIO is NOT suppressing. The fix is the title/meta, not the body. Use this sparingly — only when body coverage is clearly strong.
+5. snippet_ctr — The body genuinely answers the queries AND average rank is reasonable (≤8) AND there's at least one query with a real CTR gap that AIO is NOT suppressing. The fix is title/meta/H1 search appeal, not new body copy. Use this sparingly — only when body coverage is clearly strong.
 6. consolidate — Cannibalization is present (other pages compete for these queries) AND this page is the strongest target — same brand/topic, more depth. Recommend claiming the topic here and de-targeting the sibling pages (e.g. trim overlapping sections, internal-link toward this one).
 7. cede — Cannibalization is present AND a sibling page looks like the stronger target. Recommend ceding here (don't add coverage on this page; let the sibling rank).
 8. ai_overview_loss — The page ranks reasonably (≤8) but the live SERP shows an AI Overview AND this page is NOT cited in the AIO panel. The lever is passage-level GEO (rewrite content to match AIO-citation patterns: front-loaded factual answers near the top of the page, structured passages, source-friendly attribution, table-form data that mirrors AIO answer structure), NOT snippet rewriting and NOT body extensions. Recommendations should call out which anchors lose the click to AIO and propose a specific GEO change.
@@ -168,7 +198,7 @@ Decision guidance:
 - Prefer wrong_page over cede when there is NO cannibalization signal — wrong_page means "not the right topic for this page," cede means "right topic, wrong page."
 - Pick consolidate or cede ONLY when at least one anchor or member query has competing pages listed.
 - Before recommending consolidate, you MUST acknowledge in the recommendation what each de-target sibling currently wins (cite a winning query by name). If ANY listed competitor wins an anchor-tier query (pos ≤10 AND KD ≤20), prefer coverage_strong or snippet_ctr instead — that sibling is doing its job and de-targeting it would forfeit real traffic.
-- Use snippet_ctr only when ALL of: (a) coverage is genuinely strong, (b) at least one cluster member at pos ≤8 has a real per-query CTR gap (its own actual CTR is materially below the position-conditional expected CTR shown on its line), (c) AIO is NOT suppressing the dominant-impression queries — if AIO covers ≥50% of cluster impressions, the cluster's headline CTR gap is partly structural, AND (d) the "Hopeless queries" cluster-metric line shows none, OR shows a set covering <50% of cluster impressions. The cluster-weighted CTR gap alone is NOT sufficient justification — a snippet rewrite cannot move CTR on a query at pos ≥10. When recommending snippet_ctr, the prose MUST cite which page-1 query has the recoverable CTR gap.
+- Use snippet_ctr only when ALL of: (a) coverage is genuinely strong, (b) at least one cluster member at pos ≤8 has a real per-query CTR gap (its own actual CTR is materially below the position-conditional expected CTR shown on its line), (c) AIO is NOT suppressing the dominant-impression queries — if AIO covers ≥50% of cluster impressions, the cluster's headline CTR gap is partly structural, AND (d) the "Hopeless queries" cluster-metric line shows none, OR shows a set covering <50% of cluster impressions. The cluster-weighted CTR gap alone is NOT sufficient justification — a snippet rewrite cannot move CTR on a query at pos ≥10. When recommending snippet_ctr, the prose MUST cite which page-1 query has the recoverable CTR gap and the title/meta angle that better reflects the page's actual evidence.
 - Do NOT pick snippet_ctr if body coverage is weak; pick coverage_partial or intent_gap instead.
 - Do NOT pick snippet_ctr if the "Hopeless queries" line covers ≥50% of cluster impressions AND no member at pos ≤8 has a CTR gap. The CTR gap is structural; coverage_strong is the correct verdict (page is doing what it can; the head-term rank ceiling is the lever, which is out of scope for this classifier).
 - Pick ai_overview_loss when: ≥1 anchor WITHOUT an external canonical has AIO present AND this page is NOT cited on those AIO panels AND avg rank ≤8. The recommendation MUST cite at least one such non-canonical AIO-suppressed anchor by name and propose a specific GEO change (e.g. "lead with a 1-sentence price range near the H1 to mirror the AIO answer pattern"). Do NOT recommend snippet rewrites or body extensions in this state — they don't move the needle when the click never reaches the organic result. If EVERY AIO-suppressed anchor has an external canonical, do NOT pick ai_overview_loss; pick "cede" and name the canonical(s) instead — the AIO opportunity for those queries belongs to the canonical pages.
@@ -181,10 +211,10 @@ Decision guidance:
   > "Anchor 'hearing aids over the counter' (pos 11) shows AI Overview without HT citation — rewrite the top of the page with a 1-sentence OTC pricing summary to mirror the AIO answer pattern. ('hearing aid cost' and 'affordable hearing aids' are also AIO-suppressed but their canonicals are /how-much-do-hearing-aids-cost and /hearing-aids/affordable-hearing-aids respectively — defer those.)"
   The structural test: every canonical-anchor mention in the prose must be either (a) absent, or (b) accompanied by the canonical URL and the word "defer", "canonical", or "owned by". If you cannot satisfy this, drop the canonical anchors from the prose entirely.
 - If EVERY anchor in the cluster has an external canonical, pick "cede" regardless of body coverage — this is the wrong page for this cluster and any on-page optimization here cannibalizes a sibling that's already winning.
-- Recommendations must reference at least one anchor query by name and be specific to the topic — no generic SEO advice.
-- When recommending content additions, the named anchors should be queries the page does NOT already cover well. Use the "topic NN%" semantic score as the primary coverage verdict: ≥55% = topic substantively covered (do NOT recommend adding content for it); 40–55% = marginal (an extension may help); <40% = topic genuinely missing (a new section is warranted). The "phrase×N in body" count and "in heading" flag are *literal*-string signals — useful for snippet/title decisions but NEVER on their own a reason to claim a topic is missing. If a query has phrase×0 but topic ≥55%, the topic is covered; the fix (if any) is the title/meta wording, not new body content. If every high-priority anchor scores ≥55%, prefer coverage_strong (rank well already) or snippet_ctr (rank well + bad CTR).
+- Recommendations must reference at least one ACTIONABLE anchor query by name when any actionable anchor exists. If there are no actionable anchors, name the canonical-owned anchor only as a deferral.
+- When recommending content additions, the named anchors should be queries the page does NOT already cover well. Use the "topic NN%" semantic score as semantic presence, not as proof of editorial excellence: ≥55% means the topic is already present (do NOT recommend generic new copy for it); 40–55% = marginal (an evidence-backed extension may help); <40% = topic genuinely missing (a new section may be warranted). The "phrase×N in body" count and "in heading" flag are *literal*-string signals — useful for snippet/title decisions but NEVER on their own a reason to claim a topic is missing. If a query has phrase×0 but topic ≥55%, the topic is semantically present; the fix (if any) should be title/meta wording, freshness, stronger evidence, or structure, not duplicate body content. If every high-priority anchor scores ≥55%, prefer coverage_strong (rank well already) or snippet_ctr (rank well + bad CTR).
 - Use the per-query KD, volume, position, and impressions in the member/anchor lines to identify true low-hanging fruit. Call out specific queries by name in the recommendation, framed by why they're the easy wins (low KD, decent volume, already in striking distance).
-- "start_with" output: pick the 1–3 anchor queries the editor should attack FIRST. EXCLUDE any anchor whose topic the page already substantively covers (those need no new content), AND any anchor that should be ceded to a competing page. The recommendation prose and start_with must be consistent — don't say "start with X" in the prose if X is excluded from start_with. Empty start_with is correct for coverage_strong, wrong_page, and cede.
+- "start_with" output: pick the 1–3 actionable anchor queries the editor should attack FIRST. EXCLUDE any anchor whose topic the page already substantively covers (those need no new content), AND any anchor that should be ceded to a competing page. For ai_overview_loss, use the non-canonical AIO-suppressed anchor(s) that need source-friendly passage rewrites. The recommendation prose and start_with must be consistent — don't say "start with X" in the prose if X is excluded from start_with. Empty start_with is correct for coverage_strong, wrong_page, and cede.
 - Confidence < 0.6 if the page content is too thin to judge or the cluster is ambiguous.`;
 
 // ─── Deterministic anchor ranking ───────────────────────────────────────────
@@ -243,6 +273,206 @@ function truncateBody(body: string, max = MAX_BODY_CHARS): string {
   const lastStop = Math.max(slice.lastIndexOf(". "), slice.lastIndexOf("? "), slice.lastIndexOf("! "));
   if (lastStop > max * 0.6) return slice.slice(0, lastStop + 1) + " […]";
   return slice + " […]";
+}
+
+type EditorActionability = "ready" | "review" | "monitor" | "blocked";
+
+const AUTHOR_ACTIONABLE_KINDS = new Set<CoverageKind>([
+  "coverage_partial",
+  "intent_gap",
+  "snippet_ctr",
+  "consolidate",
+  "ai_overview_loss",
+]);
+
+function pathFromCanonicalUrl(url: string): string {
+  try {
+    return new URL(url).pathname || url;
+  } catch {
+    return url.replace(/^https?:\/\/[^/]+/i, "") || url;
+  }
+}
+
+function splitRecommendationSentences(text: string): string[] {
+  const matches = text.match(/[^.!?]+[.!?]?/g);
+  return matches?.map((s) => s.trim()).filter(Boolean) ?? [text.trim()].filter(Boolean);
+}
+
+type CanonicalMentionViolation = {
+  query: string;
+  url: string;
+  context: string;
+};
+
+function findUnsafeCanonicalMentions(
+  recommendation: string,
+  anchors: CoverageAnchor[],
+): CanonicalMentionViolation[] {
+  const violations: CanonicalMentionViolation[] = [];
+  const sentences = splitRecommendationSentences(recommendation);
+  for (const anchor of anchors) {
+    const ec = anchor.external_canonical;
+    if (!ec) continue;
+    const query = anchor.query.toLowerCase();
+    const canonicalPath = pathFromCanonicalUrl(ec.url).toLowerCase();
+    for (const sentence of sentences) {
+      const lower = sentence.toLowerCase();
+      if (!lower.includes(query)) continue;
+      const allowed =
+        lower.includes("defer")
+        || lower.includes("canonical")
+        || lower.includes("owned by")
+        || lower.includes("de-target")
+        || lower.includes("do not target")
+        || lower.includes("do not optimize")
+        || lower.includes("don't optimize")
+        || (canonicalPath.length > 0 && lower.includes(canonicalPath));
+      if (!allowed) {
+        violations.push({
+          query: anchor.query,
+          url: ec.url,
+          context: sentence.slice(0, 260),
+        });
+      }
+    }
+  }
+  return violations;
+}
+
+function canonicalDeferralSummary(anchors: CoverageAnchor[]): string {
+  return anchors
+    .filter((a) => a.external_canonical)
+    .map((a) => `"${a.query}" → ${pathFromCanonicalUrl(a.external_canonical!.url)}`)
+    .join("; ");
+}
+
+function buildCanonicalCedeRecommendation(input: CoverageInput): string {
+  const deferrals = canonicalDeferralSummary(input.anchors);
+  return `Do not optimize ${input.page} for this cluster: ${deferrals}. These anchors already have canonical HearingTracker owners, so keep this page focused on its distinct reader job and route internal links toward the canonical pages.`;
+}
+
+function buildCanonicalReviewRecommendation(
+  page: string,
+  violations: CanonicalMentionViolation[],
+): string {
+  const deferrals = violations
+    .slice(0, 3)
+    .map((v) => `"${v.query}" → ${pathFromCanonicalUrl(v.url)}`)
+    .join("; ");
+  return `Review before assigning: the draft recommendation referenced canonical-owned anchors as action targets on ${page} (${deferrals}). Defer those anchors to their canonical pages and brief this page only on non-canonical reader needs.`;
+}
+
+function buildLowConfidenceRecommendation(recommendation: string): string {
+  const cleaned = recommendation.replace(/^Review before assigning:\s*/i, "").trim();
+  return `Review before assigning: classifier confidence is below the author-task threshold. ${cleaned}`;
+}
+
+function buildReviewRecommendation(reason: string, recommendation: string): string {
+  const cleaned = recommendation.replace(/^Review before assigning:\s*/i, "").trim();
+  return `Review before assigning: ${reason}. ${cleaned}`;
+}
+
+function hasConcreteEditorialEvidence(recommendation: string): boolean {
+  const lower = recommendation.toLowerCase();
+  return [
+    "price",
+    "model",
+    "models",
+    "table",
+    "comparison",
+    "audiologist",
+    "lab",
+    "tested",
+    "testing",
+    "features",
+    "battery",
+    "warranty",
+    "return",
+    "otc",
+    "prescription",
+    "pros",
+    "cons",
+  ].some((needle) => lower.includes(needle));
+}
+
+function shouldAllowModerateConfidenceReady(args: {
+  kind: CoverageKind;
+  confidence: number;
+  startWith: string[];
+  recommendation: string;
+  canonicalViolationCount: number;
+  hasUnsafeGuardrail: boolean;
+}): boolean {
+  if (!AUTHOR_ACTIONABLE_KINDS.has(args.kind)) return false;
+  if (args.confidence < 0.5 || args.confidence >= 0.6) return false;
+  if (args.startWith.length === 0) return false;
+  if (args.canonicalViolationCount > 0 || args.hasUnsafeGuardrail) return false;
+  return hasConcreteEditorialEvidence(args.recommendation);
+}
+
+function shouldEscalateCoverage(args: {
+  primaryModelId: string;
+  escalationModelId: string | null;
+  rawKind: CoverageKind;
+  rawConfidence: number;
+  cannibalMemberCount: number;
+  externalCanonicalAnchorCount: number;
+  everyAnchorIsExternalCanonical: boolean;
+  nonCanonicalAioLossAnchorCount: number;
+  aioAnchorCount: number;
+  aioImpressionShare: number;
+}): { escalate: boolean; reasons: string[] } {
+  if (!args.escalationModelId || args.escalationModelId === args.primaryModelId) {
+    return { escalate: false, reasons: [] };
+  }
+  if (args.everyAnchorIsExternalCanonical) {
+    return { escalate: false, reasons: ["all anchors canonical; deterministic cede"] };
+  }
+
+  const reasons: string[] = [];
+  if (args.rawConfidence >= 0.4 && args.rawConfidence < 0.6) {
+    reasons.push("moderate first-pass confidence");
+  }
+  if (args.externalCanonicalAnchorCount > 0) {
+    reasons.push("external canonical present");
+  }
+  if (args.cannibalMemberCount > 0) {
+    reasons.push("SERP-verified cannibalization present");
+  }
+  if (args.nonCanonicalAioLossAnchorCount > 0) {
+    reasons.push("non-canonical AIO loss present");
+  }
+  if (args.aioAnchorCount > 0 && args.aioImpressionShare >= 0.25) {
+    reasons.push("AIO affects material impression share");
+  }
+  if (
+    args.rawKind === "snippet_ctr" ||
+    args.rawKind === "consolidate" ||
+    args.rawKind === "cede" ||
+    args.rawKind === "ai_overview_loss"
+  ) {
+    reasons.push(`high-risk first-pass kind: ${args.rawKind}`);
+  }
+
+  return { escalate: reasons.length > 0, reasons };
+}
+
+function deriveEditorActionability(args: {
+  kind: CoverageKind;
+  confidence: number;
+  startWith: string[];
+  canonicalViolationCount: number;
+  allowModerateConfidenceReady?: boolean;
+}): EditorActionability {
+  if (args.kind === "needs_review" || args.canonicalViolationCount > 0) {
+    return "review";
+  }
+  if (args.kind === "coverage_strong") return "monitor";
+  if (args.kind === "cede" || args.kind === "wrong_page") return "blocked";
+  if (args.allowModerateConfidenceReady) return "ready";
+  if (args.confidence < 0.6) return "review";
+  if (AUTHOR_ACTIONABLE_KINDS.has(args.kind) && args.startWith.length > 0) return "ready";
+  return "review";
 }
 
 function summarizeHopelessQueries(input: {
@@ -471,6 +701,19 @@ export type CoverageResult = {
     top_impression_query: string | null;
     /** External-canonical audit (v11+). */
     external_canonical_anchor_count: number;
+    canonical_owned_anchor_queries?: string[];
+    actionable_anchor_queries?: string[];
+    noncanonical_aio_loss_anchor_count?: number;
+    canonical_mention_violation_count?: number;
+    canonical_mention_violations?: CanonicalMentionViolation[];
+    editor_actionability?: EditorActionability;
+    guardrails?: string[];
+    primary_model_id?: string;
+    escalation_model_id?: string | null;
+    escalation_attempted?: boolean;
+    escalation_used?: boolean;
+    escalation_reasons?: string[];
+    escalation_error?: string;
     error?: string;
   };
   tokens: { input: number; output: number };
@@ -596,21 +839,46 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     return `EXTERNAL CANONICAL: ${ec.url} at #${ec.position.toFixed(1)}${kdPart}${volPart}`;
   };
 
+  const canonicalOwnedAnchors = input.anchors.filter((a) => a.external_canonical);
+  const actionableAnchors = input.anchors.filter((a) => !a.external_canonical);
+
   if (input.anchors.length > 0) {
-    userParts.push(
-      "",
-      `Anchor queries (top ${input.anchors.length} by volume / kd / striking distance — recommendation MUST name at least one):`,
-      ...input.anchors.map((a) => {
-        const m = memberByQuery.get(a.query);
-        const aioFlag = formatAioFlag(a.query);
-        const ecFlag = formatExternalCanonical(a);
-        const suffix = [aioFlag, ecFlag].filter(Boolean).join(" — ");
-        const suffixPart = suffix ? ` — ${suffix}` : "";
-        return m
-          ? `- "${a.query}"  (${formatStats(m)})${suffixPart}`
-          : `- "${a.query}"  (priority ${a.score.toFixed(1)})${suffixPart}`;
-      }),
-    );
+    if (actionableAnchors.length > 0) {
+      userParts.push(
+        "",
+        `Actionable anchor queries (top ${actionableAnchors.length} non-canonical anchors by volume / kd / striking distance — recommendation MUST name at least one when assigning work on this page):`,
+        ...actionableAnchors.map((a) => {
+          const m = memberByQuery.get(a.query);
+          const aioFlag = formatAioFlag(a.query);
+          const suffixPart = aioFlag ? ` — ${aioFlag}` : "";
+          return m
+            ? `- "${a.query}"  (${formatStats(m)})${suffixPart}`
+            : `- "${a.query}"  (priority ${a.score.toFixed(1)})${suffixPart}`;
+        }),
+      );
+    } else {
+      userParts.push(
+        "",
+        "Actionable anchor queries: NONE. Every priority anchor is owned by another HearingTracker canonical or no viable anchor was selected. Do not invent a page-level action for this URL.",
+      );
+    }
+
+    if (canonicalOwnedAnchors.length > 0) {
+      userParts.push(
+        "",
+        `Canonical-owned anchors (DO NOT TARGET on this page — mention only as explicit deferrals):`,
+        ...canonicalOwnedAnchors.map((a) => {
+          const m = memberByQuery.get(a.query);
+          const aioFlag = formatAioFlag(a.query);
+          const ecFlag = formatExternalCanonical(a);
+          const suffix = [aioFlag, ecFlag].filter(Boolean).join(" — ");
+          const suffixPart = suffix ? ` — ${suffix}` : "";
+          return m
+            ? `- "${a.query}"  (${formatStats(m)})${suffixPart}`
+            : `- "${a.query}"  (priority ${a.score.toFixed(1)})${suffixPart}`;
+        }),
+      );
+    }
   } else {
     userParts.push(
       "",
@@ -621,6 +889,21 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   const aioAnchorCount = input.anchorAioPresence.filter((a) => a.aiOverview).length;
   const aioCitedCount = input.anchorAioPresence.filter((a) => a.aiOverview && a.cited).length;
   const aioImpSharePct = Math.round(input.clusterAioImpressionShare * 100);
+  const validAnchors = new Set(input.anchors.map((a) => a.query));
+  // Anchors whose topic is owned by another HearingTracker page in the
+  // live SERP. These must NEVER appear in start_with — the prose can name
+  // them as "defer to canonical" but we do not let the editor click into
+  // an action that would cannibalize a sibling.
+  const externallyCanonicalized = new Set(
+    canonicalOwnedAnchors.map((a) => a.query),
+  );
+  const nonCanonicalAioLossAnchors = input.anchorAioPresence
+    .filter((a) => a.aiOverview && !a.cited && !externallyCanonicalized.has(a.query))
+    .map((a) => a.query)
+    .filter((q) => validAnchors.has(q));
+  const externalCanonicalAnchorCount = canonicalOwnedAnchors.length;
+  const everyAnchorIsExternalCanonical =
+    input.anchors.length > 0 && externalCanonicalAnchorCount === input.anchors.length;
 
   const hopelessLine = (() => {
     if (input.hopelessQueries.length === 0) return "none — no single subset of pos≥10 queries dominates the cluster";
@@ -648,60 +931,121 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     `- Hopeless queries (pos ≥10, dominate impressions): ${hopelessLine}`,
   );
 
+  const prompt = userParts.join("\n");
+
   // 60s per-call cap so a single hung request can't block the whole phase.
-  const result = await generateObject({
+  const primaryResult = await generateObject({
     model: anthropic(modelId),
     schema: CoverageSchema,
     system: SYSTEM_PROMPT,
-    prompt: userParts.join("\n"),
+    prompt,
     abortSignal: AbortSignal.timeout(60_000),
   });
 
+  const escalationModelId = resolveEscalationModelId(modelId);
+  const rawConfidence = Math.max(0, Math.min(1, primaryResult.object.confidence));
+  const escalationDecision = shouldEscalateCoverage({
+    primaryModelId: modelId,
+    escalationModelId,
+    rawKind: primaryResult.object.kind,
+    rawConfidence,
+    cannibalMemberCount,
+    externalCanonicalAnchorCount,
+    everyAnchorIsExternalCanonical,
+    nonCanonicalAioLossAnchorCount: nonCanonicalAioLossAnchors.length,
+    aioAnchorCount,
+    aioImpressionShare: input.clusterAioImpressionShare,
+  });
+  let result = primaryResult;
+  let selectedModelId = modelId;
+  let escalationAttempted = false;
+  let escalationUsed = false;
+  let escalationError: string | undefined;
+  let totalInputTokens = primaryResult.usage?.inputTokens ?? 0;
+  let totalOutputTokens = primaryResult.usage?.outputTokens ?? 0;
+
+  if (escalationDecision.escalate && escalationModelId) {
+    escalationAttempted = true;
+    try {
+      const escalatedResult = await generateObject({
+        model: anthropic(escalationModelId),
+        schema: CoverageSchema,
+        system: SYSTEM_PROMPT,
+        prompt,
+        abortSignal: AbortSignal.timeout(60_000),
+      });
+      result = escalatedResult;
+      selectedModelId = escalationModelId;
+      escalationUsed = true;
+      totalInputTokens += escalatedResult.usage?.inputTokens ?? 0;
+      totalOutputTokens += escalatedResult.usage?.outputTokens ?? 0;
+    } catch (err) {
+      escalationError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
   // Defensive normalization. The prompt states these rules but the model
   // doesn't always honor them; we enforce here so DB invariants hold.
-  const validAnchors = new Set(input.anchors.map((a) => a.query));
-  // Anchors whose topic is owned by another HearingTracker page in the
-  // live SERP. These must NEVER appear in start_with — the prose can name
-  // them as "defer to canonical" but we do not let the editor click into
-  // an action that would cannibalize a sibling.
-  const externallyCanonicalized = new Set(
-    input.anchors.filter((a) => a.external_canonical).map((a) => a.query),
-  );
   let kind: CoverageKind = result.object.kind;
   let confidence = Math.max(0, Math.min(1, result.object.confidence));
+  let recommendation = result.object.recommendation.trim();
   let startWith = (result.object.start_with ?? [])
     .filter((q) => validAnchors.has(q) && !externallyCanonicalized.has(q))
     .slice(0, 3);
 
+  if (recommendation.length > 650 && AUTHOR_ACTIONABLE_KINDS.has(kind)) {
+    confidence = Math.min(confidence, 0.55);
+  }
+
+  // Hard canonical gate. If every priority anchor already has a different
+  // HT page ranking top-10, no author task should be created on this URL,
+  // regardless of what the model inferred from body coverage.
+  if (everyAnchorIsExternalCanonical) {
+    kind = "cede";
+    startWith = [];
+    confidence = Math.max(confidence, 0.85);
+    recommendation = buildCanonicalCedeRecommendation(input);
+  }
+
   // (a) consolidate / cede require a real cannibalization signal. If the model
   //     picks them without one, downgrade to needs_review so an admin can
   //     re-categorize rather than silently mislabel.
-  if (cannibalMemberCount === 0 && (kind === "consolidate" || kind === "cede")) {
+  if (
+    kind === "consolidate"
+    && cannibalMemberCount === 0
+  ) {
+    kind = "needs_review";
+    confidence = Math.min(confidence, 0.4);
+  }
+  if (
+    kind === "cede"
+    && cannibalMemberCount === 0
+    && externalCanonicalAnchorCount === 0
+  ) {
     kind = "needs_review";
     confidence = Math.min(confidence, 0.4);
   }
 
   // (a2) ai_overview_loss requires AIO presence on at least one anchor — and
-  //      strictly speaking, on at least one anchor where THIS page is NOT
-  //      cited. Without that signal the diagnosis is unfounded; downgrade to
-  //      needs_review.
-  const aioUncitedAnchorCount = input.anchorAioPresence.filter(
-    (a) => a.aiOverview && !a.cited,
-  ).length;
-  if (kind === "ai_overview_loss" && aioUncitedAnchorCount === 0) {
+  //      strictly speaking, on at least one NON-canonical anchor where THIS
+  //      page is NOT cited. Canonical-owned AIO gaps belong to their canonical
+  //      pages, not this URL.
+  if (kind === "ai_overview_loss" && nonCanonicalAioLossAnchors.length === 0) {
     kind = "needs_review";
     confidence = Math.min(confidence, 0.4);
   }
 
-  // (b) coverage_strong / wrong_page / cede / ai_overview_loss should have
-  //     empty start_with. ai_overview_loss is GEO-rewrite, not anchor-targeted.
+  // (b) coverage_strong / wrong_page / cede should have empty start_with.
+  //     ai_overview_loss keeps the non-canonical AIO-loss anchors visible so
+  //     empty start_with really means "nothing to attack here."
   if (
     kind === "coverage_strong" ||
     kind === "wrong_page" ||
-    kind === "cede" ||
-    kind === "ai_overview_loss"
+    kind === "cede"
   ) {
     startWith = [];
+  } else if (kind === "ai_overview_loss") {
+    startWith = nonCanonicalAioLossAnchors.slice(0, 3);
   }
 
   // (c) actionable kinds should have at least one start_with anchor (the prose
@@ -710,7 +1054,13 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   //     through `input.anchors` to find the first un-canonicalized one. If
   //     none exists, every anchor's topic is owned by another HT page and
   //     the right verdict is `cede` regardless of what the model picked.
-  const actionableKinds: CoverageKind[] = ["coverage_partial", "intent_gap", "snippet_ctr", "consolidate"];
+  const actionableKinds: CoverageKind[] = [
+    "coverage_partial",
+    "intent_gap",
+    "snippet_ctr",
+    "consolidate",
+    "ai_overview_loss",
+  ];
   if (actionableKinds.includes(kind) && startWith.length === 0 && input.anchors.length > 0) {
     const nonCanonical = input.anchors.find((a) => !externallyCanonicalized.has(a.query));
     if (nonCanonical) {
@@ -725,12 +1075,90 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     }
   }
 
-  return {
+  let canonicalMentionViolations = findUnsafeCanonicalMentions(
+    recommendation,
+    input.anchors,
+  );
+  const unsafeCanonicalMentionViolations = canonicalMentionViolations;
+  const unsafeCanonicalMentionCount = canonicalMentionViolations.length;
+  if (canonicalMentionViolations.length > 0) {
+    kind = "needs_review";
+    startWith = [];
+    confidence = Math.min(confidence, 0.4);
+    recommendation = buildCanonicalReviewRecommendation(input.page, canonicalMentionViolations);
+  }
+
+  const hasUnsafeGuardrail =
+    unsafeCanonicalMentionCount > 0
+    || (kind === "needs_review" && confidence <= 0.4);
+  const allowModerateConfidenceReady = shouldAllowModerateConfidenceReady({
     kind,
-    recommendation: result.object.recommendation.trim(),
     confidence,
     startWith,
-    modelId,
+    recommendation,
+    canonicalViolationCount: unsafeCanonicalMentionCount,
+    hasUnsafeGuardrail,
+  });
+
+  if (
+    AUTHOR_ACTIONABLE_KINDS.has(kind)
+    && confidence < 0.6
+    && !allowModerateConfidenceReady
+  ) {
+    kind = "needs_review";
+    startWith = [];
+    recommendation = buildLowConfidenceRecommendation(recommendation);
+  }
+
+  if (kind === "needs_review") {
+    startWith = [];
+    if (!recommendation.startsWith("Review before assigning:")) {
+      recommendation = buildReviewRecommendation(
+        "classifier routed this cluster to review instead of an author-ready task",
+        recommendation,
+      );
+    }
+    // Re-run after wrapping the prose; the wrapper may repeat canonical query
+    // text in the diagnostic clause and should still be audited.
+    canonicalMentionViolations = findUnsafeCanonicalMentions(
+      recommendation,
+      input.anchors,
+    );
+    if (canonicalMentionViolations.length > 0) {
+      recommendation = buildCanonicalReviewRecommendation(input.page, canonicalMentionViolations);
+    }
+  }
+
+  const guardrails: string[] = [];
+  if (externalCanonicalAnchorCount > 0) {
+    guardrails.push(`${externalCanonicalAnchorCount} canonical-owned anchor(s) excluded from author targets`);
+  }
+  if (nonCanonicalAioLossAnchors.length > 0) {
+    guardrails.push(`${nonCanonicalAioLossAnchors.length} non-canonical AIO-loss anchor(s) available for source-friendly rewrites`);
+  }
+  if (unsafeCanonicalMentionCount > 0) {
+    guardrails.push("canonical-owned anchor appeared in action prose; routed to review");
+  }
+  if (confidence < 0.6 && !allowModerateConfidenceReady) {
+    guardrails.push("confidence below author-task threshold");
+  }
+  if (allowModerateConfidenceReady) {
+    guardrails.push("moderate confidence accepted: concrete non-canonical author task");
+  }
+  const editorActionability = deriveEditorActionability({
+    kind,
+    confidence,
+    startWith,
+    canonicalViolationCount: unsafeCanonicalMentionCount,
+    allowModerateConfidenceReady,
+  });
+
+  return {
+    kind,
+    recommendation,
+    confidence,
+    startWith,
+    modelId: selectedModelId,
     promptVersion: COVERAGE_PROMPT_VERSION,
     audit: {
       prompt_version: COVERAGE_PROMPT_VERSION,
@@ -751,11 +1179,24 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
       aio_cited_count: aioCitedCount,
       aio_impression_share: Math.round(input.clusterAioImpressionShare * 1000) / 1000,
       ...summarizeHopelessQueries(input),
-      external_canonical_anchor_count: input.anchors.filter((a) => a.external_canonical).length,
+      external_canonical_anchor_count: externalCanonicalAnchorCount,
+      canonical_owned_anchor_queries: canonicalOwnedAnchors.map((a) => a.query),
+      actionable_anchor_queries: actionableAnchors.map((a) => a.query),
+      noncanonical_aio_loss_anchor_count: nonCanonicalAioLossAnchors.length,
+      canonical_mention_violation_count: unsafeCanonicalMentionCount,
+      canonical_mention_violations: unsafeCanonicalMentionViolations,
+      editor_actionability: editorActionability,
+      guardrails,
+      primary_model_id: modelId,
+      escalation_model_id: escalationModelId,
+      escalation_attempted: escalationAttempted,
+      escalation_used: escalationUsed,
+      escalation_reasons: escalationDecision.reasons,
+      escalation_error: escalationError,
     },
     tokens: {
-      input: result.usage?.inputTokens ?? 0,
-      output: result.usage?.outputTokens ?? 0,
+      input: totalInputTokens,
+      output: totalOutputTokens,
     },
   };
 }
@@ -798,6 +1239,12 @@ export async function classifyClustersConcurrently(
         // abort the whole phase. Mark this cluster needs_review so an admin can
         // re-classify it later, and let the rest of the batch finish.
         const message = err instanceof Error ? err.message : String(err);
+        const canonicalOwned = input.anchors.filter((a) => a.external_canonical);
+        const actionable = input.anchors.filter((a) => !a.external_canonical);
+        const canonicalSet = new Set(canonicalOwned.map((a) => a.query));
+        const nonCanonicalAioLossCount = input.anchorAioPresence.filter(
+          (a) => a.aiOverview && !a.cited && !canonicalSet.has(a.query),
+        ).length;
         const fallback: CoverageResult = {
           kind: "needs_review",
           recommendation: `Classification failed: ${message.slice(0, 200)}`,
@@ -826,7 +1273,19 @@ export async function classifyClustersConcurrently(
             aio_cited_count: input.anchorAioPresence.filter((a) => a.aiOverview && a.cited).length,
             aio_impression_share: Math.round(input.clusterAioImpressionShare * 1000) / 1000,
             ...summarizeHopelessQueries(input),
-            external_canonical_anchor_count: input.anchors.filter((a) => a.external_canonical).length,
+            external_canonical_anchor_count: canonicalOwned.length,
+            canonical_owned_anchor_queries: canonicalOwned.map((a) => a.query),
+            actionable_anchor_queries: actionable.map((a) => a.query),
+            noncanonical_aio_loss_anchor_count: nonCanonicalAioLossCount,
+            canonical_mention_violation_count: 0,
+            canonical_mention_violations: [],
+            editor_actionability: "review",
+            guardrails: ["classification failed"],
+            primary_model_id: cachedModelId,
+            escalation_model_id: null,
+            escalation_attempted: false,
+            escalation_used: false,
+            escalation_reasons: [],
             error: message,
           },
           tokens: { input: 0, output: 0 },
