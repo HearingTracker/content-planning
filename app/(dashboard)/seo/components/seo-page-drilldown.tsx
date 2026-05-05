@@ -19,7 +19,16 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { AlertTriangle, CornerUpRight, ExternalLink, Info, Sparkles } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  CornerUpRight,
+  ExternalLink,
+  Info,
+  Link as LinkIcon,
+  ListChecks,
+  Sparkles,
+} from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { useSeoOpportunities, useSynthesisFindingsForPage } from "@/hooks/queries";
 import { StatusSelect } from "./status-select";
@@ -461,6 +470,14 @@ function ClusterCard({
   const expectedCtr = o.expected_ctr_pct != null ? Number(o.expected_ctr_pct) : null;
   const totalVol = Number(o.total_volume ?? 0);
   const missedClicks = Number(o.total_missed_clicks ?? 0);
+  const lift = computeLiftDisplay(o, missedClicks);
+  const isNonEdit = o.actionability === "blocked" || o.actionability === "monitor";
+  const routeTarget = isNonEdit
+    ? anchorFindings.find((f) => f.target_page && f.target_page !== currentPage)?.target_page ?? null
+    : null;
+  const visibleAnchorFindings = routeTarget
+    ? anchorFindings.filter((f) => f.target_page !== routeTarget)
+    : anchorFindings;
 
   const isPending = o.kind === "needs_review";
 
@@ -519,7 +536,7 @@ function ClusterCard({
 
       {/* Recommendation — surfaced near the top so the editor's first read is
           the actual instruction. Low-confidence warning sits beneath; the
-          green "Ready edit" banner above auto-suppresses when confidence is
+          green "Ready to edit" banner above auto-suppresses when confidence is
           low so green-go and amber-stop don't stack on the same prose. */}
       {o.recommendation ? (
         <div className="px-5 py-3">
@@ -536,6 +553,10 @@ function ClusterCard({
       ) : (
         <p className="text-foreground/90 px-5 py-3 text-[13px] leading-relaxed">{meta.description}</p>
       )}
+
+      {routeTarget && <RoutingSuggestion targetPage={routeTarget} />}
+
+      <RecommendationAuditPanel opp={o} isNonEdit={isNonEdit} />
 
       {/* Member queries — start_with anchors pinned & highlighted, rest
           collapsed past a soft cap. start_with is the LLM-curated subset
@@ -560,7 +581,7 @@ function ClusterCard({
         <Metric
           label="Search vol."
           value={totalVol > 0 ? totalVol.toLocaleString() : "—"}
-          help="Total monthly search volume across the cluster, per Ahrefs."
+          help="Total monthly search volume across the cluster, per DataForSEO."
         />
         <Metric
           label="CTR"
@@ -584,21 +605,33 @@ function ClusterCard({
 
       {/* Missed clicks insight — borderless prose so it reads as a footnote
           to the metrics strip directly above, not as a competing callout. */}
-      {missedClicks > 5 && (
+      {lift && (
         <div className="mx-5 mt-2 flex items-start gap-1.5 text-[12px] leading-snug">
           <Sparkles className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
           <span className="text-amber-900/90">
-            Roughly{" "}
-            <span className="font-semibold tabular-nums">{missedClicks.toLocaleString()}</span>{" "}
-            extra clicks/mo are within reach if this cluster hit the typical CTR for its current
-            ranking.
+            {lift.capped ? (
+              <>
+                Raw ceiling{" "}
+                <span className="font-semibold tabular-nums">{lift.raw.toLocaleString()}</span>
+                {" "}clicks/mo; about{" "}
+                <span className="font-semibold tabular-nums">{lift.adjusted.toLocaleString()}</span>
+                {" "}looks addressable after SERP caps.
+              </>
+            ) : (
+              <>
+                Roughly{" "}
+                <span className="font-semibold tabular-nums">{lift.raw.toLocaleString()}</span>{" "}
+                extra clicks/mo are within reach if this cluster hit the typical CTR for its current
+                ranking.
+              </>
+            )}
           </span>
         </div>
       )}
 
-      {anchorFindings.length > 0 && (
+      {visibleAnchorFindings.length > 0 && (
         <ClusterFindingsBadgeRow
-          findings={anchorFindings}
+          findings={visibleAnchorFindings}
           currentPage={currentPage}
         />
       )}
@@ -626,8 +659,8 @@ function ClusterCard({
             top query <span className="text-foreground">&ldquo;{o.canonical_query}&rdquo;</span>
           </span>
         )}
-        {o.ahrefs_intent_prior && (
-          <span className="font-mono opacity-80">{o.ahrefs_intent_prior}</span>
+        {o.dataforseo_intent_prior && (
+          <span className="font-mono opacity-80">{o.dataforseo_intent_prior}</span>
         )}
         {o.match_decision === "review" && (
           <span className="text-amber-700">match flagged for review</span>
@@ -640,12 +673,49 @@ function ClusterCard({
             </span>
           </TooltipTrigger>
           <TooltipContent side="top" className="max-w-xs">
-            Internal priority score blending impressions, position gap, keyword difficulty,
-            and revenue. Higher = work on this first.
+            <PriorityTooltipContent opp={o} />
           </TooltipContent>
         </Tooltip>
       </footer>
     </article>
+  );
+}
+
+function computeLiftDisplay(
+  opp: SeoOpportunity,
+  rawMissedClicks: number,
+): { raw: number; adjusted: number; capped: boolean } | null {
+  if (rawMissedClicks <= 5 || opp.actionability === "blocked" || opp.actionability === "monitor") {
+    return null;
+  }
+
+  const signals = new Set(opp.recommendation_audit?.serp_change_trigger.signals ?? []);
+  let factor = 1;
+  if (signals.has("ctr_gap_structural_from_position")) factor *= 0.45;
+  if (signals.has("aio_present_on_serp")) factor *= 0.8;
+  if (signals.has("aio_present_without_this_page_as_serp_source")) factor *= 0.75;
+  if (signals.has("external_canonical_page_in_top_10")) factor *= 0.8;
+  if (signals.has("serp_verified_cannibalization")) factor *= 0.85;
+
+  const capped = factor < 0.95;
+  const adjusted = capped ? Math.max(1, Math.round(rawMissedClicks * factor)) : rawMissedClicks;
+  return { raw: rawMissedClicks, adjusted, capped };
+}
+
+function RoutingSuggestion({ targetPage }: { targetPage: string }) {
+  return (
+    <div className="mx-5 mb-2 rounded-md bg-slate-50 px-3 py-2 text-[12px] leading-snug text-slate-800 ring-1 ring-inset ring-slate-200">
+      Route this intent to{" "}
+      <a
+        href={`https://www.hearingtracker.com${targetPage}`}
+        target="_blank"
+        rel="noreferrer"
+        className="font-mono underline decoration-slate-300 underline-offset-2"
+      >
+        {targetPage}
+      </a>
+      .
+    </div>
   );
 }
 
@@ -718,7 +788,7 @@ function ActionabilityNotice({
   guardrails: string[];
   confidence: number | null;
 }) {
-  // Suppress the green "Ready edit" reassurance when confidence is low —
+  // Suppress the green "Ready to edit" reassurance when confidence is low —
   // stacking it above the amber low-confidence warning beneath the prose
   // sends contradicting signals on the same recommendation.
   if (actionability === "ready" && confidence != null && confidence < 0.6) return null;
@@ -726,8 +796,8 @@ function ActionabilityNotice({
 
   const config = {
     ready: {
-      label: "Ready edit",
-      text: "Passed classifier guardrails.",
+      label: "Ready to edit",
+      text: "Ready to brief on the highlighted anchors.",
       className: "border-emerald-200/70 bg-emerald-50/60 text-emerald-900",
     },
     review: {
@@ -747,7 +817,14 @@ function ActionabilityNotice({
     },
   }[actionability];
 
-  const notes = guardrails.slice(0, 2);
+  const notes = guardrails
+    .map((note) => {
+      if (note.includes("canonical-owned")) return "Canonical-owned anchors are deferred";
+      if (note.includes("AIO-loss")) return "AIO-source rewrites are available";
+      if (note.includes("moderate confidence")) return "Concrete non-canonical task";
+      return note;
+    })
+    .slice(0, 2);
 
   return (
     <div className={cn("mx-5 mt-3 rounded-md border px-3 py-2 text-[12px] leading-snug", config.className)}>
@@ -760,6 +837,289 @@ function ActionabilityNotice({
       </div>
     </div>
   );
+}
+
+const STANDALONE_CRITERION_LABELS: Record<string, string> = {
+  not_navigational_gated: "Not navigational",
+  supported_intent: "Info/commercial intent",
+  meaningful_demand: "Meaningful demand",
+  partial_subsection_coverage: "Partial subsection",
+  dedicated_article_depth: "Article depth",
+  no_existing_canonical: "No canonical owner",
+};
+
+function RecommendationAuditPanel({
+  opp,
+  isNonEdit,
+}: {
+  opp: SeoOpportunity;
+  isNonEdit: boolean;
+}) {
+  const audit = opp.recommendation_audit;
+  const standalone = opp.standalone_article;
+  const links = isNonEdit
+    ? []
+    : opp.internal_link_recommendations.filter((link) => link.confidence >= 0.75);
+  const checklist = isNonEdit
+    ? []
+    : opp.editor_gap_checklist.filter((item) => item.status !== "not_applicable");
+  const aio = opp.aio_serp;
+  const showStandalone = !isNonEdit && standalone;
+  const showAio = !isNonEdit && aio?.aio_present_on_serp;
+  const hasAudit =
+    audit ||
+    showStandalone ||
+    links.length > 0 ||
+    checklist.length > 0 ||
+    showAio;
+  if (!hasAudit) return null;
+
+  const triggeredSignals = audit
+    ? [
+        audit.freshness_trigger.triggered ? "freshness" : null,
+        audit.intent_trigger.triggered ? "intent" : null,
+        audit.content_gap_trigger.triggered ? "content gap" : null,
+        audit.serp_change_trigger.triggered ? "SERP" : null,
+      ].filter((s): s is string => s != null)
+    : [];
+
+  return (
+    <div className="mx-5 mt-1 space-y-3 rounded-md bg-zinc-50/80 px-3 py-3 ring-1 ring-inset ring-zinc-200/80">
+      {showStandalone && (
+        <div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+              Standalone article
+            </span>
+            <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset", standaloneStatusTone(standalone))}>
+              {standaloneStatusLabel(standalone)}
+            </span>
+          </div>
+          <p className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
+            {standalone.reason}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {Object.entries(standalone.criteria).map(([key, passed]) => (
+              <span
+                key={key}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] ring-1 ring-inset",
+                  passed
+                    ? "bg-emerald-50 text-emerald-800 ring-emerald-200"
+                    : "bg-white text-zinc-600 ring-zinc-200",
+                )}
+              >
+                {passed ? (
+                  <CheckCircle2 className="h-2.5 w-2.5" />
+                ) : (
+                  <span className="h-1.5 w-1.5 rounded-full bg-zinc-300" />
+                )}
+                {STANDALONE_CRITERION_LABELS[key] ?? key.replaceAll("_", " ")}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {links.length > 0 && (
+        <div>
+          <div className="mb-1.5 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+            <LinkIcon className="h-3 w-3" />
+            Internal links
+          </div>
+          <ul className="space-y-1.5">
+            {links.slice(0, 3).map((link, index) => (
+              <li key={`${link.source_page}-${link.target_page}-${index}`} className="text-[11.5px] leading-snug">
+                <span className="font-medium text-zinc-800">
+                  {directionLabel(link.direction)}
+                </span>{" "}
+                <a
+                  href={`https://www.hearingtracker.com${link.source_page}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono text-[11px] text-zinc-700 underline decoration-zinc-300 underline-offset-2"
+                >
+                  {link.source_page}
+                </a>{" "}
+                <span className="text-muted-foreground">to</span>{" "}
+                <a
+                  href={`https://www.hearingtracker.com${link.target_page}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono text-[11px] text-zinc-700 underline decoration-zinc-300 underline-offset-2"
+                >
+                  {link.target_page}
+                </a>{" "}
+                <span className="text-muted-foreground">
+                  as &ldquo;{link.suggested_anchor_text}&rdquo; · {Math.round(link.confidence * 100)}%
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {showAio && (
+        <div className="text-[11.5px] leading-snug text-muted-foreground">
+          <span className="font-medium text-zinc-800">AIO SERP data:</span>{" "}
+          present for {aio.aio_present_on_serp_queries.length} anchor
+          {aio.aio_present_on_serp_queries.length === 1 ? "" : "s"};{" "}
+          {aio.aio_citation_seen
+            ? `HT source seen for ${aio.aio_citation_seen_queries.length}.`
+            : "no HT source seen in the Google AIO source list."}
+        </div>
+      )}
+
+      {checklist.length > 0 && (
+        <div>
+          <div className="mb-1.5 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+            <ListChecks className="h-3 w-3" />
+            Human checklist
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {checklist.map((item) => (
+              <Tooltip key={item.id}>
+                <TooltipTrigger asChild>
+                  <span
+                    className={cn(
+                      "inline-flex cursor-help items-center rounded-full px-2 py-0.5 text-[10.5px] ring-1 ring-inset",
+                      checklistStatusTone(item.status),
+                    )}
+                  >
+                    {item.label}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  <span className="font-medium capitalize">{item.status.replace("_", " ")}</span>
+                  {item.reason ? `: ${item.reason}` : ""}
+                </TooltipContent>
+              </Tooltip>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {audit && (
+        <details className="group text-[11.5px] leading-snug text-muted-foreground">
+          <summary className="cursor-pointer select-none text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+            Signals
+          </summary>
+          <div className="mt-2 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-zinc-900 ring-1 ring-inset ring-zinc-200">
+                {triggerLabel(audit.recommendation_trigger)}
+              </span>
+              {triggeredSignals.map((signal) => (
+                <span
+                  key={signal}
+                  className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] text-zinc-700 ring-1 ring-inset ring-zinc-200"
+                >
+                  {signal}
+                </span>
+              ))}
+            </div>
+            <p>{audit.confidence_rationale}</p>
+            {(audit.content_gap_trigger.missing_or_marginal_queries.length > 0 ||
+              audit.serp_change_trigger.signals.length > 0) && (
+              <p className="text-zinc-700">
+                {audit.content_gap_trigger.missing_or_marginal_queries.length > 0 && (
+                  <>
+                    Gap:{" "}
+                    {audit.content_gap_trigger.missing_or_marginal_queries.slice(0, 3).join(", ")}
+                    {audit.serp_change_trigger.signals.length > 0 ? ". " : "."}
+                  </>
+                )}
+                {audit.serp_change_trigger.signals.length > 0 && (
+                  <>SERP: {audit.serp_change_trigger.signals.map(signalLabel).join(", ")}.</>
+                )}
+              </p>
+            )}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function standaloneStatusLabel(standalone: NonNullable<SeoOpportunity["standalone_article"]>): string {
+  if (standalone.recommended) return "Recommended";
+  if (standalone.criteria.not_navigational_gated === false) return "Blocked: navigational";
+  if (standalone.criteria.meaningful_demand === false) return "Not enough demand";
+  if (standalone.criteria.no_existing_canonical === false) return "Keep as page update";
+  if (standalone.score >= 75) return "Near miss";
+  return "Not recommended";
+}
+
+function standaloneStatusTone(standalone: NonNullable<SeoOpportunity["standalone_article"]>): string {
+  if (standalone.recommended) return "bg-amber-100 text-amber-900 ring-amber-200";
+  if (standalone.score >= 75) return "bg-white text-zinc-800 ring-zinc-300";
+  return "bg-white text-zinc-700 ring-zinc-200";
+}
+
+function PriorityTooltipContent({ opp }: { opp: SeoOpportunity }) {
+  const p = opp.prioritization;
+  if (!p) {
+    return (
+      <>
+        Internal priority score blending impressions, position gap, keyword difficulty,
+        and revenue. Higher = work on this first.
+      </>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      <div>
+        Computed priority score {p.computed_score} using formula {p.formula_version}.
+      </div>
+      <div>
+        Traffic {p.inputs.traffic_impression_opportunity}, business {p.inputs.business_value},
+        trend {p.inputs.current_decline_or_volatility}, confidence {p.inputs.confidence}.
+      </div>
+      <div>
+        Effort {p.effort_estimate}; manual priority{" "}
+        {p.manual_priority_override ?? "none"}.
+      </div>
+    </div>
+  );
+}
+
+function triggerLabel(trigger: string): string {
+  const labels: Record<string, string> = {
+    content_gap: "Content gap",
+    standalone_article_candidate: "Standalone article",
+    recoverable_ctr_gap: "CTR gap",
+    aio_present_on_serp_without_ht_source: "AIO SERP source gap",
+    cannibalization: "Cannibalization",
+    external_canonical: "External canonical",
+    navigational_intent_block: "Navigation block",
+    wrong_page_or_navigation: "Wrong page",
+    monitor: "Monitor",
+    review_guardrail: "Review guardrail",
+  };
+  return labels[trigger] ?? trigger.replaceAll("_", " ");
+}
+
+function signalLabel(signal: string): string {
+  const labels: Record<string, string> = {
+    aio_present_on_serp: "AIO present on SERP",
+    aio_present_without_this_page_as_serp_source: "AIO source gap",
+    external_canonical_page_in_top_10: "canonical in top 10",
+    serp_verified_cannibalization: "cannibalization",
+    ctr_gap_structural_from_position: "structural CTR cap",
+  };
+  return labels[signal] ?? signal.replaceAll("_", " ");
+}
+
+function directionLabel(direction: SeoOpportunity["internal_link_recommendations"][number]["direction"]): string {
+  if (direction === "to_current_page") return "Add link to current page:";
+  if (direction === "both") return "Consider links both ways:";
+  return "Add link from current page:";
+}
+
+function checklistStatusTone(status: SeoOpportunity["editor_gap_checklist"][number]["status"]): string {
+  if (status === "required") return "bg-amber-100 text-amber-900 ring-amber-200";
+  if (status === "recommended") return "bg-white text-zinc-700 ring-zinc-200";
+  return "bg-zinc-100 text-zinc-500 ring-zinc-200";
 }
 
 // ─── Small UI bits ──────────────────────────────────────────────────────────
@@ -821,7 +1181,7 @@ function KdRange({ min, max }: { min: number | null; max: number | null }) {
         </span>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs">
-        Ahrefs Keyword Difficulty range across the cluster (0–100). ≤20 easy, 21–50 moderate,
+        DataForSEO Keyword Difficulty range across the cluster (0–100). ≤20 easy, 21–50 moderate,
         51+ hard. The bar reflects the cluster&apos;s hardest member.
       </TooltipContent>
     </Tooltip>

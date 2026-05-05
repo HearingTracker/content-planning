@@ -29,12 +29,14 @@ import {
   type AnchorCandidate,
   type CompetingPage,
   type CoverageAnchor,
+  type CoverageKind,
   type CoverageInput,
+  type InternalLinkRecommendation,
   type CoverageMemberSignal,
   type CoverageResult,
 } from "./coverage";
 import type { PageMeta } from "./classify";
-import { expectedCtr } from "./classify";
+import { expectedCtr, tokenize } from "./classify";
 import { loadSerps, normalizeUrlForMatch, type SerpData } from "./serp-data";
 import { embedPageSections, topicCoverageScore } from "./section-embeddings";
 import { SyncJobReporter, type CompletionStats } from "./sync-job-reporter";
@@ -53,6 +55,47 @@ type AnchorExternalCanonicalRow = {
   position: number;
   kd: number | null;
   volume: number | null;
+};
+
+type ManualSeoPriority = "low" | "medium" | "high" | "urgent";
+
+type ManualPriorityContext = {
+  byPage: Map<string, ManualSeoPriority>;
+};
+
+type RankTrend = {
+  decline_positions: number;
+  volatility_positions: number;
+  samples: number;
+};
+
+type ClusterPrioritizationAudit = {
+  formula_version: "v1";
+  computed_score: number;
+  legacy_actionability_score: number;
+  effort_estimate: "low" | "medium" | "high";
+  manual_priority_override: ManualSeoPriority | null;
+  inputs: {
+    traffic_impression_opportunity: number;
+    current_decline_or_volatility: number;
+    business_value: number;
+    confidence: number;
+    freshness_event_urgency: number;
+    actionability: number;
+    effort_multiplier: number;
+    manual_priority_multiplier: number;
+  };
+  evidence: {
+    total_impressions: number;
+    total_volume: number;
+    missed_clicks: number;
+    earnings_90d: number;
+    conversions_90d: number;
+    avg_rank_decline_positions: number;
+    avg_rank_volatility_positions: number;
+    confidence: number | null;
+  };
+  rationale: string[];
 };
 
 function getServiceClient(): SupabaseClient {
@@ -219,7 +262,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
     const flatCandidates = flattenWithPage(candidatesByPage);
     const labelInputs: LabelInput[] = flatCandidates.map((c) => ({
       memberQueries: c.cluster.members.map((m) => m.query),
-      ahrefsIntentPrior: c.aggregates.ahrefs_intent_prior,
+      dataForSeoIntentPrior: c.aggregates.dataforseo_intent_prior,
       brand: c.cluster.brand,
       retailer: c.cluster.retailer,
       productFamily: c.cluster.product_family,
@@ -456,7 +499,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 type EmbeddedQuery = ClusterableQuery & {
-  // Reference back to source row so we can pull GSC + Ahrefs metrics later.
+  // Reference back to source row so we can pull GSC + DataForSEO metrics later.
   source: SeoOpportunityRow;
 };
 
@@ -477,8 +520,8 @@ type ClusterAggregates = {
   min_kd: number | null;
   max_kd: number | null;
   score: number;
-  ahrefs_intent_prior: string | null;
-  ahrefs_intent_mix: Record<string, number>;
+  dataforseo_intent_prior: string | null;
+  dataforseo_intent_mix: Record<string, number>;
 };
 
 function clusterAllPages(
@@ -499,7 +542,7 @@ function clusterAllPages(
     const clusters = clusterPageQueries(queries, { threshold: CLUSTER_THRESHOLD });
     const candidates: PageCandidate[] = clusters.map((cluster) => {
       const aggregates = aggregateCluster(cluster.members.map((m) => m.source));
-      const topicSignature = makeTopicSignature(page, cluster.canonical_query, aggregates.ahrefs_intent_prior, cluster.is_branded, cluster.brand);
+      const topicSignature = makeTopicSignature(page, cluster.canonical_query, aggregates.dataforseo_intent_prior, cluster.is_branded, cluster.brand);
       return { page, cluster, aggregates, topicSignature };
     });
     out.set(page, candidates);
@@ -544,7 +587,7 @@ function aggregateCluster(rows: SeoOpportunityRow[]): ClusterAggregates {
   const weighted_ctr_pct = totalImp > 0 ? Math.round((totalClicks / totalImp) * 10000) / 100 : null;
   const expected_ctr_pct = totalImp > 0 ? Math.round((totalExpectedClicks / totalImp) * 10000) / 100 : null;
   const avg_position = posCount > 0 ? Math.round((posSum / posCount) * 10) / 10 : null;
-  const ahrefs_intent_prior = pickIntentMode(intentMix);
+  const dataforseo_intent_prior = pickIntentMode(intentMix);
 
   return {
     total_impressions: totalImp,
@@ -556,8 +599,8 @@ function aggregateCluster(rows: SeoOpportunityRow[]): ClusterAggregates {
     min_kd: minKd,
     max_kd: maxKd,
     score: Math.round(scoreSum),
-    ahrefs_intent_prior,
-    ahrefs_intent_mix: intentMix,
+    dataforseo_intent_prior,
+    dataforseo_intent_mix: intentMix,
   };
 }
 
@@ -734,6 +777,7 @@ async function upsertEverything(
   const now = new Date().toISOString();
   const embeddingModel = process.env.SEO_EMBEDDING_MODEL!;
   const embeddingDim = Number(process.env.SEO_EMBEDDING_DIMENSIONS!);
+  const pageRowsByPage = new Map(ctx.pages.map((p) => [p.page, p]));
 
   let created = 0, matched = 0, archived = 0, opportunities = 0;
 
@@ -742,6 +786,11 @@ async function upsertEverything(
   //    insert. Their state is already preserved in the user_state_archive
   //    table; delete to clear the slot. After the first run, this is a no-op.
   await supabase.from("cp_seo_opportunities").delete().is("cluster_id", null);
+
+  const [manualPriorityContext, rankTrendByPageQuery] = await Promise.all([
+    loadManualPriorityContext(supabase),
+    loadRankTrendByPageQuery(supabase),
+  ]);
 
   // 1. Update existing pages (or insert if missing).
   await upsertPages(supabase, ctx.pages, ctx.pageMetas, now);
@@ -763,6 +812,17 @@ async function upsertEverything(
       const anchorExternalCanonicals = ctx.anchorExternalCanonicalsByCluster[labelIdx] ?? [];
       const cannibal = ctx.cannibalByCluster[labelIdx] ?? {};
       const topicScores = ctx.topicScoresByCluster[labelIdx] ?? new Map<string, number>();
+      const prioritization = computeClusterPrioritization({
+        pageRow: pageRowsByPage.get(page) ?? null,
+        candidate: c,
+        coverage: cov,
+        manualPriority: manualPriorityContext.byPage.get(page) ?? null,
+        rankTrendByPageQuery,
+      });
+      const clusterScore = prioritization.computed_score;
+      const coverageInputDigest = cov?.audit
+        ? { ...cov.audit, prioritization }
+        : null;
       labelIdx++;
 
       const baseFields = {
@@ -775,8 +835,8 @@ async function upsertEverything(
         brand: c.cluster.brand,
         retailer: c.cluster.retailer,
         product_family: c.cluster.product_family,
-        ahrefs_intent_prior: c.aggregates.ahrefs_intent_prior,
-        ahrefs_intent_mix: c.aggregates.ahrefs_intent_mix,
+        dataforseo_intent_prior: c.aggregates.dataforseo_intent_prior,
+        dataforseo_intent_mix: c.aggregates.dataforseo_intent_mix,
         member_count: c.cluster.members.length,
         total_impressions: c.aggregates.total_impressions,
         total_volume: c.aggregates.total_volume,
@@ -786,7 +846,7 @@ async function upsertEverything(
         avg_position: c.aggregates.avg_position,
         min_kd: c.aggregates.min_kd,
         max_kd: c.aggregates.max_kd,
-        score: c.aggregates.score,
+        score: clusterScore,
         embedding_model: embeddingModel,
         embedding_dim: embeddingDim,
         label_model: label.modelId,
@@ -801,7 +861,7 @@ async function upsertEverything(
         coverage_confidence: cov?.confidence ?? null,
         coverage_model: cov?.modelId ?? null,
         coverage_prompt_v: cov?.promptVersion ?? null,
-        coverage_input_digest: cov?.audit ?? null,
+        coverage_input_digest: coverageInputDigest,
         coverage_classified_at: cov ? now : null,
         anchor_queries: anchors,
         anchor_external_canonicals: anchorExternalCanonicals,
@@ -855,7 +915,7 @@ async function upsertEverything(
         expected_ctr_pct: member.source.expected_ctr_pct,
         kd: member.source.kd,
         volume: member.source.volume,
-        ahrefs_intents: member.source.intents,
+        dataforseo_intents: member.source.intents,
         serp_features: member.source.serp_features,
         phrase_in_body: member.source.phrase_in_body,
         in_heading: member.source.in_heading,
@@ -886,7 +946,7 @@ async function upsertEverything(
           .update({
             page,
             kind_text: oppKind,
-            score: c.aggregates.score,
+            score: clusterScore,
             last_seen_at: now,
             archived_at: null,
           })
@@ -905,7 +965,7 @@ async function upsertEverything(
             // columns are satisfied.
             query: c.cluster.canonical_query,
             kind: "secondary",
-            score: c.aggregates.score,
+            score: clusterScore,
             status: "open",
             phrase_in_body: 0,
             in_heading: false,
@@ -964,6 +1024,242 @@ async function upsertPages(
     .from("cp_seo_pages")
     .upsert(rows, { onConflict: "page" });
   if (error) throw new Error(`upsertPages: ${error.message}`);
+}
+
+async function loadManualPriorityContext(
+  supabase: SupabaseClient,
+): Promise<ManualPriorityContext> {
+  const byPage = new Map<string, ManualSeoPriority>();
+  const { data, error } = await supabase
+    .from("cp_seo_manual_queue_items")
+    .select("page, priority")
+    .is("archived_at", null)
+    .in("status", ["open", "in_progress"]);
+  if (error) {
+    // The manual-queue migration may not exist in older local branches. The
+    // sync still produces automated priorities without the manual boost.
+    return { byPage };
+  }
+
+  const rank: Record<ManualSeoPriority, number> = {
+    low: 1,
+    medium: 2,
+    high: 3,
+    urgent: 4,
+  };
+  for (const row of (data ?? []) as Array<{ page: string | null; priority: string | null }>) {
+    const page = normalizeHtPath(row.page);
+    const priority = row.priority as ManualSeoPriority | null;
+    if (!page || !priority || !(priority in rank)) continue;
+    const existing = byPage.get(page);
+    if (!existing || rank[priority] > rank[existing]) byPage.set(page, priority);
+  }
+  return { byPage };
+}
+
+async function loadRankTrendByPageQuery(
+  supabase: SupabaseClient,
+): Promise<Map<string, RankTrend>> {
+  const out = new Map<string, RankTrend>();
+  const since = new Date(Date.now() - 65 * 24 * 60 * 60 * 1000).toISOString();
+  const rows: Array<{ page: string; query: string; position: number; recorded_at: string }> = [];
+  const PAGE_SIZE = 1000;
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from("cp_seo_rank_history")
+      .select("page, query, position, recorded_at")
+      .gte("recorded_at", since)
+      .order("recorded_at", { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (error) return out;
+    if (!data || data.length === 0) break;
+    for (const r of data as Array<{
+      page: string;
+      query: string;
+      position: number | string;
+      recorded_at: string;
+    }>) {
+      const position = Number(r.position);
+      if (!Number.isFinite(position)) continue;
+      rows.push({ page: r.page, query: r.query, position, recorded_at: r.recorded_at });
+    }
+    if (data.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+
+  const grouped = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const key = `${row.page}|${row.query}`;
+    const list = grouped.get(key) ?? [];
+    list.push(row);
+    grouped.set(key, list);
+  }
+
+  for (const [key, list] of grouped) {
+    if (list.length < 2) continue;
+    const first = list[0].position;
+    const latest = list[list.length - 1].position;
+    const mean = list.reduce((sum, r) => sum + r.position, 0) / list.length;
+    const variance = list.reduce((sum, r) => sum + ((r.position - mean) ** 2), 0) / list.length;
+    out.set(key, {
+      decline_positions: Math.round((latest - first) * 10) / 10,
+      volatility_positions: Math.round(Math.sqrt(variance) * 10) / 10,
+      samples: list.length,
+    });
+  }
+  return out;
+}
+
+function computeClusterPrioritization(args: {
+  pageRow: SeoPageRow | null;
+  candidate: PageCandidate;
+  coverage: CoverageResult | null;
+  manualPriority: ManualSeoPriority | null;
+  rankTrendByPageQuery: Map<string, RankTrend>;
+}): ClusterPrioritizationAudit {
+  const { pageRow, candidate, coverage, manualPriority, rankTrendByPageQuery } = args;
+  const kind = (coverage?.kind ?? "needs_review") as CoverageKind;
+  const confidence = coverage?.confidence ?? null;
+  const rankTrend = summarizeClusterRankTrend(
+    candidate.page,
+    candidate.cluster.members.map((m) => m.query),
+    rankTrendByPageQuery,
+  );
+  const missedClicks = candidate.aggregates.total_missed_clicks;
+  const totalImpressions = candidate.aggregates.total_impressions;
+  const totalVolume = candidate.aggregates.total_volume;
+  const trafficScore = Math.min(
+    40,
+    Math.log1p((missedClicks * 12) + (totalImpressions * 0.08) + (totalVolume * 0.05)) * 5,
+  );
+  const earnings = pageRow?.earnings_90d ?? 0;
+  const conversions = pageRow?.conversions_90d ?? 0;
+  const businessScore = Math.min(20, (Math.log1p(earnings) * 2.2) + (conversions * 0.6));
+  const declineScore = Math.min(
+    15,
+    (Math.max(0, rankTrend.avgDecline) * 3) + (rankTrend.avgVolatility * 1.2),
+  );
+  const confidenceScore = Math.min(15, (confidence ?? 0.35) * 15);
+  const freshnessTriggered =
+    coverage?.audit.recommendation_audit?.freshness_trigger.triggered === true;
+  const freshnessScore = freshnessTriggered ? 8 : 0;
+  const actionabilityScore = kindActionabilityScore(kind);
+  const standaloneRecommended = coverage?.audit.standalone_article?.recommended === true;
+  const effort = estimateEffort(kind, standaloneRecommended);
+  const effortMultiplier = effort === "low" ? 1 : effort === "medium" ? 0.85 : 0.68;
+  const manualMultiplier = manualPriorityMultiplier(manualPriority);
+  const raw =
+    trafficScore
+    + businessScore
+    + declineScore
+    + confidenceScore
+    + freshnessScore
+    + actionabilityScore;
+  const computedScore = Math.max(1, Math.round(raw * effortMultiplier * manualMultiplier * 10));
+
+  const rationale = [
+    `traffic ${trafficScore.toFixed(1)}/40 from impressions, volume, and missed clicks`,
+    `business ${businessScore.toFixed(1)}/20 from 90d earnings/conversions`,
+    rankTrend.samples > 0
+      ? `rank trend ${declineScore.toFixed(1)}/15 from ${rankTrend.samples} historical samples`
+      : "rank trend unavailable; no decline boost applied",
+    `confidence ${confidenceScore.toFixed(1)}/15`,
+    freshnessTriggered ? "freshness/event urgency boost applied" : "no freshness/event urgency boost",
+    manualPriority ? `manual ${manualPriority} priority multiplier applied` : "no manual priority override",
+    `${effort} effort multiplier applied`,
+  ];
+
+  return {
+    formula_version: "v1",
+    computed_score: computedScore,
+    legacy_actionability_score: candidate.aggregates.score,
+    effort_estimate: effort,
+    manual_priority_override: manualPriority,
+    inputs: {
+      traffic_impression_opportunity: round1(trafficScore),
+      current_decline_or_volatility: round1(declineScore),
+      business_value: round1(businessScore),
+      confidence: round1(confidenceScore),
+      freshness_event_urgency: round1(freshnessScore),
+      actionability: round1(actionabilityScore),
+      effort_multiplier: effortMultiplier,
+      manual_priority_multiplier: manualMultiplier,
+    },
+    evidence: {
+      total_impressions: totalImpressions,
+      total_volume: totalVolume,
+      missed_clicks: missedClicks,
+      earnings_90d: earnings,
+      conversions_90d: conversions,
+      avg_rank_decline_positions: round1(rankTrend.avgDecline),
+      avg_rank_volatility_positions: round1(rankTrend.avgVolatility),
+      confidence,
+    },
+    rationale,
+  };
+}
+
+function summarizeClusterRankTrend(
+  page: string,
+  queries: string[],
+  rankTrendByPageQuery: Map<string, RankTrend>,
+): { avgDecline: number; avgVolatility: number; samples: number } {
+  const trends = queries
+    .map((q) => rankTrendByPageQuery.get(`${page}|${q}`))
+    .filter((t): t is RankTrend => t != null);
+  if (trends.length === 0) {
+    return { avgDecline: 0, avgVolatility: 0, samples: 0 };
+  }
+  return {
+    avgDecline: trends.reduce((sum, t) => sum + Math.max(0, t.decline_positions), 0) / trends.length,
+    avgVolatility: trends.reduce((sum, t) => sum + t.volatility_positions, 0) / trends.length,
+    samples: trends.reduce((sum, t) => sum + t.samples, 0),
+  };
+}
+
+function kindActionabilityScore(kind: CoverageKind): number {
+  switch (kind) {
+    case "intent_gap":
+      return 10;
+    case "coverage_partial":
+      return 9;
+    case "consolidate":
+      return 9;
+    case "ai_overview_loss":
+      return 8;
+    case "snippet_ctr":
+      return 6;
+    case "needs_review":
+      return 3;
+    case "wrong_page":
+    case "cede":
+      return 2;
+    case "coverage_strong":
+      return 0;
+  }
+}
+
+function estimateEffort(
+  kind: CoverageKind,
+  standaloneRecommended: boolean,
+): ClusterPrioritizationAudit["effort_estimate"] {
+  if (standaloneRecommended || kind === "intent_gap" || kind === "consolidate") return "high";
+  if (kind === "coverage_partial" || kind === "ai_overview_loss" || kind === "needs_review") return "medium";
+  return "low";
+}
+
+function manualPriorityMultiplier(priority: ManualSeoPriority | null): number {
+  if (priority === "urgent") return 1.6;
+  if (priority === "high") return 1.35;
+  if (priority === "medium") return 1.15;
+  if (priority === "low") return 1.05;
+  return 1;
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
 }
 
 /**
@@ -1060,6 +1356,7 @@ function buildCoverageInputs(
   pageSectionEmbeddings: Map<string, number[][]>,
 ): CoverageInput[] {
   const out: CoverageInput[] = [];
+  const pageLinkProfiles = buildPageLinkProfiles(pageMetas);
   for (let idx = 0; idx < flatCandidates.length; idx++) {
     const c = flatCandidates[idx];
     const meta = pageMetas.get(c.page);
@@ -1102,6 +1399,7 @@ function buildCoverageInputs(
         competing_pages: verifiedCompetitors,
         kd: m.source.kd,
         volume: m.source.volume,
+        dataforseo_intents: m.source.intents,
         position: m.source.position,
         impressions: m.source.impressions,
         clicks: m.source.clicks,
@@ -1180,13 +1478,14 @@ function buildCoverageInputs(
       metaDescription: meta?.description ?? null,
       headings: meta?.headings ?? [],
       bodyText: meta?.bodyText ?? "",
+      pageContentModifiedAt: meta?.contentModifiedAt ?? null,
       clusterLabel: labels[idx]?.label ?? c.cluster.canonical_query,
       canonicalQuery: c.cluster.canonical_query,
       isBranded: c.cluster.is_branded,
       brand: c.cluster.brand,
       retailer: c.cluster.retailer,
       productFamily: c.cluster.product_family,
-      ahrefsIntentPrior: c.aggregates.ahrefs_intent_prior,
+      dataForSeoIntentPrior: c.aggregates.dataforseo_intent_prior,
       members,
       anchors,
       anchorAioPresence,
@@ -1195,6 +1494,238 @@ function buildCoverageInputs(
       avgPosition: c.aggregates.avg_position,
       weightedCtrPct: c.aggregates.weighted_ctr_pct,
       expectedCtrPct: c.aggregates.expected_ctr_pct,
+      internalLinkRecommendations: buildInternalLinkRecommendations({
+        currentPage: c.page,
+        members,
+        anchors,
+        pageLinkProfiles,
+      }),
+    });
+  }
+  return out;
+}
+
+type PageLinkProfile = {
+  page: string;
+  title: string;
+  tokens: Set<string>;
+  outbound: Set<string>;
+};
+
+const LINK_RECOMMENDATION_GENERIC_TOKENS = new Set([
+  "hearing",
+  "aid",
+  "aids",
+  "best",
+  "review",
+  "reviews",
+  "guide",
+  "page",
+  "tracker",
+]);
+
+const GENERIC_ANCHOR_TOKENS = new Set([
+  ...LINK_RECOMMENDATION_GENERIC_TOKENS,
+  "type",
+  "types",
+  "price",
+  "prices",
+  "pricing",
+  "cost",
+  "costs",
+  "compare",
+  "comparison",
+]);
+
+const BROAD_INTERNAL_LINK_TARGETS = new Set([
+  "/hearing-aids",
+  "/best-hearing-aids",
+  "/how-much-do-hearing-aids-cost",
+  "/hearing-aids/compare",
+  "/otc-hearing-aids",
+  "/prescription-hearing-aids",
+]);
+
+function buildPageLinkProfiles(pageMetas: Map<string, PageMeta>): Map<string, PageLinkProfile> {
+  const profiles = new Map<string, PageLinkProfile>();
+  for (const [page, meta] of pageMetas) {
+    const tokens = new Set<string>();
+    for (const token of [
+      ...meta.titleTokens,
+      ...meta.bodyTokens,
+      ...tokenize(page.replace(/[/-]/g, " ")),
+    ]) {
+      if (token.length < 3 || LINK_RECOMMENDATION_GENERIC_TOKENS.has(token)) continue;
+      tokens.add(token);
+    }
+    profiles.set(page, {
+      page,
+      title: meta.title,
+      tokens,
+      outbound: new Set((meta.outboundInternalLinks ?? []).map((p) => normalizeHtPath(p)).filter(Boolean) as string[]),
+    });
+  }
+  return profiles;
+}
+
+function buildInternalLinkRecommendations(args: {
+  currentPage: string;
+  members: CoverageMemberSignal[];
+  anchors: CoverageAnchor[];
+  pageLinkProfiles: Map<string, PageLinkProfile>;
+}): InternalLinkRecommendation[] {
+  const current = args.pageLinkProfiles.get(args.currentPage);
+  const recommendations: InternalLinkRecommendation[] = [];
+  const actionableAnchorQueries = args.anchors
+    .filter((a) => !a.external_canonical)
+    .map((a) => a.query);
+  const anchorQueries = actionableAnchorQueries.length > 0
+    ? actionableAnchorQueries
+    : args.members
+        .sort((a, b) => (b.impressions ?? 0) - (a.impressions ?? 0))
+        .map((m) => m.query)
+        .slice(0, 3);
+
+  if (current) {
+    for (const anchor of args.anchors) {
+      if (!anchor.external_canonical) continue;
+      const target = normalizeHtPath(anchor.external_canonical.url);
+      if (!target || target === args.currentPage || current.outbound.has(target)) continue;
+      if (isGenericAnchorText(anchor.query) && !isBroadInternalLinkTarget(target)) continue;
+      recommendations.push({
+        source_page: args.currentPage,
+        target_page: target,
+        suggested_anchor_text: anchor.query,
+        reason: `A different HearingTracker page ranks top 10 for "${anchor.query}"; link this page toward the canonical instead of double-targeting the query.`,
+        confidence: 0.9,
+        direction: "from_current_page",
+      });
+    }
+  }
+
+  const targetQueryTokens = new Set(
+    anchorQueries.flatMap((q) => tokenize(q))
+      .filter((t) => t.length >= 3 && !LINK_RECOMMENDATION_GENERIC_TOKENS.has(t)),
+  );
+  const bestAnchorText = pickInternalLinkAnchorText(anchorQueries);
+  const sourceCandidates: Array<{ profile: PageLinkProfile; overlap: string[] }> = [];
+  const targetCandidates: Array<{ profile: PageLinkProfile; overlap: string[] }> = [];
+
+  if (!bestAnchorText || targetQueryTokens.size < 2) {
+    return dedupeInternalLinkRecommendations(recommendations)
+      .filter(shouldKeepInternalLinkRecommendation)
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, 5);
+  }
+
+  for (const profile of args.pageLinkProfiles.values()) {
+    if (profile.page === args.currentPage) continue;
+    const overlap = [...targetQueryTokens].filter((t) => profile.tokens.has(t));
+    if (overlap.length < 2) continue;
+
+    if (!profile.outbound.has(args.currentPage)) {
+      sourceCandidates.push({ profile, overlap });
+    }
+    if (current && !current.outbound.has(profile.page)) {
+      targetCandidates.push({ profile, overlap });
+    }
+  }
+
+  sourceCandidates
+    .sort((a, b) => b.overlap.length - a.overlap.length || a.profile.page.length - b.profile.page.length)
+    .slice(0, 2)
+    .forEach(({ profile, overlap }) => {
+      recommendations.push({
+        source_page: profile.page,
+        target_page: args.currentPage,
+        suggested_anchor_text: bestAnchorText,
+        reason: `${profile.page} overlaps this cluster on ${overlap.slice(0, 4).join(", ")} and does not currently link to the target page.`,
+        confidence: Math.min(0.85, 0.5 + (overlap.length * 0.08)),
+        direction: "to_current_page",
+      });
+    });
+
+  targetCandidates
+    .sort((a, b) => b.overlap.length - a.overlap.length || a.profile.page.length - b.profile.page.length)
+    .slice(0, 1)
+    .forEach(({ profile, overlap }) => {
+      const reciprocalMissing = !profile.outbound.has(args.currentPage);
+      recommendations.push({
+        source_page: args.currentPage,
+        target_page: profile.page,
+        suggested_anchor_text: bestAnchorText,
+        reason: `This page and ${profile.page} share ${overlap.slice(0, 4).join(", ")} topic overlap; add a contextual link${reciprocalMissing ? " and consider the reciprocal path" : ""}.`,
+        confidence: Math.min(0.75, 0.46 + (overlap.length * 0.07)),
+        direction: reciprocalMissing ? "both" : "from_current_page",
+      });
+    });
+
+  return dedupeInternalLinkRecommendations(recommendations)
+    .filter(shouldKeepInternalLinkRecommendation)
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 5);
+}
+
+function pickInternalLinkAnchorText(queries: string[]): string {
+  return queries.find((q) => !isGenericAnchorText(q)) ?? "";
+}
+
+function isGenericAnchorText(query: string): boolean {
+  const tokens = tokenize(query).filter((t) => t.length >= 3);
+  if (tokens.length === 0) return true;
+  return tokens.every((t) => GENERIC_ANCHOR_TOKENS.has(t));
+}
+
+function isBroadInternalLinkTarget(path: string): boolean {
+  if (BROAD_INTERNAL_LINK_TARGETS.has(path)) return true;
+  return path === "/hearing-aid-insurance-coverage"
+    || path.includes("finance")
+    || path.includes("medicare")
+    || path.includes("otc")
+    || path.includes("prescription");
+}
+
+function isProductLikeHearingAidPage(path: string): boolean {
+  if (!/^\/hearing-aids\/[^/]+$/.test(path)) return false;
+  return !isBroadInternalLinkTarget(path);
+}
+
+function isBroadGuidePage(path: string): boolean {
+  return path === "/best-hearing-aids"
+    || path === "/hearing-aids"
+    || path.includes("guide")
+    || path.includes("best-")
+    || path.includes("compare");
+}
+
+function shouldKeepInternalLinkRecommendation(rec: InternalLinkRecommendation): boolean {
+  if (rec.source_page === rec.target_page) return false;
+  if (rec.confidence < 0.75) return false;
+  if (isGenericAnchorText(rec.suggested_anchor_text) && !isBroadInternalLinkTarget(rec.target_page)) {
+    return false;
+  }
+  if (
+    isBroadGuidePage(rec.source_page)
+    && isProductLikeHearingAidPage(rec.target_page)
+    && isGenericAnchorText(rec.suggested_anchor_text)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function dedupeInternalLinkRecommendations(
+  recommendations: InternalLinkRecommendation[],
+): InternalLinkRecommendation[] {
+  const seen = new Set<string>();
+  const out: InternalLinkRecommendation[] = [];
+  for (const rec of recommendations) {
+    const key = `${rec.source_page}|${rec.target_page}|${rec.suggested_anchor_text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      ...rec,
+      confidence: Math.round(rec.confidence * 100) / 100,
     });
   }
   return out;
@@ -1336,6 +1867,19 @@ function pathToSerpUrlKey(path: string): string {
   // we can compare against DataForSEO's full-URL SERP results.
   const url = path.startsWith("http") ? path : `https://${SITE_HOSTNAME}${path}`;
   return normalizeUrlForMatch(url);
+}
+
+function normalizeHtPath(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    if (!url.hostname.endsWith("hearingtracker.com")) return null;
+    return url.pathname.replace(/\/+$/, "") || "/";
+  } catch {
+    if (!trimmed.startsWith("/")) return null;
+    return trimmed.split("#")[0].split("?")[0].replace(/\/+$/, "") || "/";
+  }
 }
 
 /**

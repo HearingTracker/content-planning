@@ -80,7 +80,7 @@ export function actionabilityScore(args: {
 }): number {
   const ctrGap = Math.max(0, TARGET_CTR - args.ctr);
   const missedClicks = args.imp * ctrGap;
-  // Unknown KD → 0.7 multiplier (common for low-volume long-tails Ahrefs lacks data on)
+  // Unknown KD → 0.7 multiplier (common for low-volume long-tails DataForSEO lacks data on)
   const kdMult = args.kd == null ? 0.7 : Math.max(0.1, 1 - args.kd / 100);
   const posMult = args.pos <= 5 ? 1.2 : args.pos <= 8 ? 1.0 : 0.8;
   return missedClicks * kdMult * posMult;

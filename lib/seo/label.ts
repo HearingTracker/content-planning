@@ -1,6 +1,6 @@
 // Cluster labeling via Haiku.
 //
-// One LLM call per cluster: takes the member queries + Ahrefs intent prior +
+// One LLM call per cluster: takes the member queries + DataForSEO intent prior +
 // brand/retailer context and returns a short editorial label. Structured
 // output (Zod) so we never parse strings. Audit digest captures what the
 // model saw, for the 1A.5 admin review screen and future prompt iteration.
@@ -49,7 +49,7 @@ Rules:
 
 export type LabelInput = {
   memberQueries: string[];
-  ahrefsIntentPrior?: string | null;
+  dataForSeoIntentPrior?: string | null;
   brand?: string | null;
   retailer?: string | null;
   productFamily?: string | null;
@@ -62,7 +62,7 @@ export type LabelResult = {
   audit: {
     prompt_version: string;
     member_count: number;
-    ahrefs_intent_prior: string | null;
+    dataforseo_intent_prior: string | null;
     brand: string | null;
     retailer: string | null;
     product_family: string | null;
@@ -83,8 +83,8 @@ export async function labelCluster(input: LabelInput): Promise<LabelResult> {
   if (input.brand) userLines.push(`\nBrand context: ${input.brand}`);
   if (input.retailer) userLines.push(`Retailer context: ${input.retailer}`);
   if (input.productFamily) userLines.push(`Product family: ${input.productFamily}`);
-  if (input.ahrefsIntentPrior) {
-    userLines.push(`Ahrefs intent prior: ${input.ahrefsIntentPrior}`);
+  if (input.dataForSeoIntentPrior) {
+    userLines.push(`DataForSEO intent prior: ${input.dataForSeoIntentPrior}`);
   }
 
   const result = await generateObject({
@@ -101,7 +101,7 @@ export async function labelCluster(input: LabelInput): Promise<LabelResult> {
     audit: {
       prompt_version: LABEL_PROMPT_VERSION,
       member_count: input.memberQueries.length,
-      ahrefs_intent_prior: input.ahrefsIntentPrior ?? null,
+      dataforseo_intent_prior: input.dataForSeoIntentPrior ?? null,
       brand: input.brand ?? null,
       retailer: input.retailer ?? null,
       product_family: input.productFamily ?? null,

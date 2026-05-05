@@ -5,6 +5,8 @@ import { after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUserRole } from "@/lib/auth/roles";
 import type {
+  SeoManualQueueInput,
+  SeoManualQueueItem,
   SeoOppStatus,
   SeoPage,
   SeoOpportunity,
@@ -31,6 +33,255 @@ export async function getSeoPages(): Promise<SeoPage[]> {
   return (data ?? []) as SeoPage[];
 }
 
+const TASK_TYPES = new Set<SeoManualQueueInput["task_type"]>([
+  "article_update",
+  "update_event",
+  "manual_article",
+  "reopen_monitor",
+]);
+
+const PRIORITIES = new Set<SeoManualQueueInput["priority"]>([
+  "low",
+  "medium",
+  "high",
+  "urgent",
+]);
+
+const PRIORITY_RANK: Record<SeoManualQueueInput["priority"], number> = {
+  urgent: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
+
+const STATUS_RANK: Record<SeoOppStatus, number> = {
+  open: 0,
+  in_progress: 1,
+  done: 2,
+  dismissed: 3,
+};
+
+function cleanOptionalText(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeSeoPath(value: string | null | undefined): string | null {
+  const trimmed = cleanOptionalText(value);
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.hostname.endsWith("hearingtracker.com")) {
+      return url.pathname.replace(/\/+$/, "") || "/";
+    }
+    throw new Error("Page must be a HearingTracker URL or path");
+  } catch {
+    if (trimmed.startsWith("/")) return trimmed.replace(/\/+$/, "") || "/";
+    return `/${trimmed}`.replace(/\/+$/, "") || "/";
+  }
+}
+
+function normalizeManualQueueInput(input: SeoManualQueueInput): SeoManualQueueInput {
+  if (!TASK_TYPES.has(input.task_type)) {
+    throw new Error("Invalid manual SEO task type");
+  }
+  if (!PRIORITIES.has(input.priority)) {
+    throw new Error("Invalid manual SEO priority");
+  }
+
+  const page = normalizeSeoPath(input.page);
+  const targetTitle = cleanOptionalText(input.target_title);
+  const summary = cleanOptionalText(input.summary);
+  const evidence = cleanOptionalText(input.evidence);
+  const sourceUrl = cleanOptionalText(input.source_url);
+  const eventDate = cleanOptionalText(input.event_date);
+
+  if (!page && !targetTitle) {
+    throw new Error("Manual SEO task needs a page path or target title");
+  }
+  if (!summary) {
+    throw new Error("Manual SEO task needs a summary");
+  }
+  if (sourceUrl) {
+    try {
+      new URL(sourceUrl);
+    } catch {
+      throw new Error("Source URL must be a valid URL");
+    }
+  }
+  if (eventDate && !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) {
+    throw new Error("Event date must use YYYY-MM-DD");
+  }
+
+  return {
+    task_type: input.task_type,
+    page,
+    target_title: targetTitle,
+    summary,
+    evidence,
+    source_url: sourceUrl,
+    event_date: eventDate,
+    priority: input.priority,
+    linked_opportunity_id: input.linked_opportunity_id ?? null,
+    linked_synthesis_finding_id: input.linked_synthesis_finding_id ?? null,
+  };
+}
+
+function sortManualQueue(items: SeoManualQueueItem[]): SeoManualQueueItem[] {
+  return [...items].sort((a, b) => {
+    const statusDelta = STATUS_RANK[a.status] - STATUS_RANK[b.status];
+    if (statusDelta !== 0) return statusDelta;
+    const priorityDelta = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+    if (priorityDelta !== 0) return priorityDelta;
+    return b.created_at.localeCompare(a.created_at);
+  });
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string")
+    : [];
+}
+
+function parseStandaloneArticleAudit(
+  value: unknown,
+): SeoOpportunity["standalone_article"] {
+  const obj = asObject(value);
+  if (!obj || typeof obj.recommended !== "boolean") return null;
+  const evidence = asObject(obj.evidence) ?? {};
+  return {
+    recommended: obj.recommended,
+    score: typeof obj.score === "number" ? obj.score : Number(obj.score ?? 0),
+    reason: typeof obj.reason === "string" ? obj.reason : "",
+    candidate_queries: asStringArray(obj.candidate_queries),
+    criteria: asObject(obj.criteria) as Record<string, boolean> | null ?? {},
+    evidence: evidence as NonNullable<SeoOpportunity["standalone_article"]>["evidence"],
+  };
+}
+
+function parseRecommendationAudit(
+  value: unknown,
+): SeoOpportunity["recommendation_audit"] {
+  const obj = asObject(value);
+  if (!obj || typeof obj.recommendation_trigger !== "string") return null;
+  return obj as SeoOpportunity["recommendation_audit"];
+}
+
+function parseEditorChecklist(
+  value: unknown,
+): SeoOpportunity["editor_gap_checklist"] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => Boolean(asObject(item)))
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : "unknown",
+      label: typeof item.label === "string" ? item.label : "Review item",
+      status:
+        item.status === "required" ||
+        item.status === "recommended" ||
+        item.status === "not_applicable"
+          ? item.status
+          : "recommended",
+      reason: typeof item.reason === "string" ? item.reason : "",
+    }));
+}
+
+function parseInternalLinkRecommendations(
+  value: unknown,
+): SeoOpportunity["internal_link_recommendations"] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => Boolean(asObject(item)))
+    .map((item) => {
+      const direction: SeoOpportunity["internal_link_recommendations"][number]["direction"] =
+        item.direction === "from_current_page" ||
+        item.direction === "to_current_page" ||
+        item.direction === "both"
+          ? item.direction
+          : "from_current_page";
+      return {
+        source_page: typeof item.source_page === "string" ? item.source_page : "",
+        target_page: typeof item.target_page === "string" ? item.target_page : "",
+        suggested_anchor_text: typeof item.suggested_anchor_text === "string" ? item.suggested_anchor_text : "",
+        reason: typeof item.reason === "string" ? item.reason : "",
+        confidence: typeof item.confidence === "number" ? item.confidence : Number(item.confidence ?? 0),
+        direction,
+      };
+    })
+    .filter((item) => item.source_page && item.target_page && item.suggested_anchor_text);
+}
+
+function parseAioSerpAudit(value: unknown): SeoOpportunity["aio_serp"] {
+  const obj = asObject(value);
+  if (!obj || typeof obj.aio_present_on_serp !== "boolean") return null;
+  return {
+    aio_present_on_serp: obj.aio_present_on_serp,
+    aio_present_on_serp_queries: asStringArray(obj.aio_present_on_serp_queries),
+    aio_citation_seen: obj.aio_citation_seen === true,
+    aio_citation_seen_queries: asStringArray(obj.aio_citation_seen_queries),
+    ai_platform_citation_seen: null,
+    citation_source: typeof obj.citation_source === "string" ? obj.citation_source : null,
+    note: typeof obj.note === "string" ? obj.note : "",
+  };
+}
+
+function parsePrioritizationAudit(
+  value: unknown,
+): SeoOpportunity["prioritization"] {
+  const obj = asObject(value);
+  if (!obj || typeof obj.computed_score !== "number") return null;
+  return obj as SeoOpportunity["prioritization"];
+}
+
+export async function getManualSeoQueueItems(): Promise<SeoManualQueueItem[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("cp_seo_manual_queue_items")
+    .select("*")
+    .is("archived_at", null)
+    .in("status", ["open", "in_progress"])
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (error) throw new Error(error.message);
+  return sortManualQueue((data ?? []) as SeoManualQueueItem[]);
+}
+
+export async function createManualSeoQueueItem(input: SeoManualQueueInput): Promise<void> {
+  await requireEditor();
+  const supabase = await createClient();
+  const normalized = normalizeManualQueueInput(input);
+  const { data: userResp } = await supabase.auth.getUser();
+
+  const { error } = await supabase
+    .from("cp_seo_manual_queue_items")
+    .insert({
+      ...normalized,
+      created_by: userResp.user?.id ?? null,
+    });
+  if (error) throw new Error(error.message);
+  revalidatePath("/seo");
+}
+
+export async function updateManualSeoQueueItemStatus(
+  id: number,
+  status: SeoOppStatus,
+): Promise<void> {
+  await requireEditor();
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("cp_seo_manual_queue_items")
+    .update({ status })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidatePath("/seo");
+}
+
 export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[]> {
   const supabase = await createClient();
 
@@ -44,7 +295,7 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
       first_seen_at, last_seen_at, archived_at,
       cluster:cp_seo_clusters!inner (
         label, canonical_query, is_branded, brand, retailer, product_family,
-        ahrefs_intent_prior, member_count, total_impressions, total_volume,
+        dataforseo_intent_prior, member_count, total_impressions, total_volume,
         total_missed_clicks, weighted_ctr_pct, expected_ctr_pct, avg_position,
         min_kd, max_kd, match_decision, match_score,
         coverage_recommendation, coverage_confidence, coverage_input_digest,
@@ -79,7 +330,7 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
       brand: string | null;
       retailer: string | null;
       product_family: string | null;
-      ahrefs_intent_prior: string | null;
+      dataforseo_intent_prior: string | null;
       member_count: number;
       total_impressions: number;
       total_volume: number;
@@ -93,10 +344,10 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
       match_score: number | null;
       coverage_recommendation: string | null;
       coverage_confidence: number | string | null;
-      coverage_input_digest: {
+      coverage_input_digest: ({
         editor_actionability?: string;
         guardrails?: unknown;
-      } | null;
+      } & Record<string, unknown>) | null;
       anchor_queries: { query: string; score: number }[] | null;
       start_with_queries: string[] | null;
       anchor_external_canonicals:
@@ -149,11 +400,12 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
         }
       }
     }
-    const rawGuardrails = row.cluster.coverage_input_digest?.guardrails;
+    const digest = row.cluster.coverage_input_digest;
+    const rawGuardrails = digest?.guardrails;
     const guardrails = Array.isArray(rawGuardrails)
       ? rawGuardrails.filter((g): g is string => typeof g === "string")
       : [];
-    const rawActionability = row.cluster.coverage_input_digest?.editor_actionability;
+    const rawActionability = digest?.editor_actionability;
     const actionability =
       rawActionability === "ready" ||
       rawActionability === "review" ||
@@ -185,7 +437,7 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
       brand: row.cluster.brand,
       retailer: row.cluster.retailer,
       product_family: row.cluster.product_family,
-      ahrefs_intent_prior: row.cluster.ahrefs_intent_prior,
+      dataforseo_intent_prior: row.cluster.dataforseo_intent_prior,
       member_count: row.cluster.member_count,
       total_impressions: row.cluster.total_impressions,
       total_volume: row.cluster.total_volume,
@@ -214,6 +466,14 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
       start_with_queries: startWith,
       external_canonicals: externalCanonicals,
       cannibal_pages: [...cannibalSet].sort(),
+      standalone_article: parseStandaloneArticleAudit(digest?.standalone_article),
+      recommendation_audit: parseRecommendationAudit(digest?.recommendation_audit),
+      editor_gap_checklist: parseEditorChecklist(digest?.editor_gap_checklist),
+      internal_link_recommendations: parseInternalLinkRecommendations(
+        digest?.internal_link_recommendations,
+      ),
+      aio_serp: parseAioSerpAudit(digest?.aio_serp),
+      prioritization: parsePrioritizationAudit(digest?.prioritization),
     };
   });
 }

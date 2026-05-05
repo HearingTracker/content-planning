@@ -18,6 +18,9 @@ export type { UserRole } from "./use-current-user";
 // SEO hooks
 export {
   useSeoPages,
+  useManualSeoQueueItems,
+  useCreateManualSeoQueueItem,
+  useUpdateManualSeoQueueItemStatus,
   useSeoOpportunities,
   useSynthesisFindingsForPage,
   useSynthesisFindings,

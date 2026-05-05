@@ -223,7 +223,7 @@ function OverviewHeader({
 
           <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.2em] text-amber-800/80">
             <Sparkles className="h-3 w-3" />
-            <span>Estimated monthly lift</span>
+            <span>Raw monthly lift</span>
           </div>
 
           <div className="mt-2 flex items-baseline gap-2.5">
@@ -236,13 +236,13 @@ function OverviewHeader({
           <Tooltip>
             <TooltipTrigger asChild>
               <p className="mt-2 max-w-md text-[12.5px] leading-snug text-muted-foreground cursor-help">
-                If every open cluster reached the typical CTR for its current ranking
+                Before SERP caps: if every open cluster reached the typical CTR for its current ranking
                 position. <span className="underline decoration-dotted decoration-zinc-300 underline-offset-2">How is this calculated?</span>
               </p>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="max-w-sm">
-              For each open cluster: impressions × expected CTR (by avg position) − actual
-              clicks. Summed across {summary.openTotal} open clusters.
+              For each open cluster: impressions × expected CTR by average position minus actual
+              clicks. Cluster cards discount this where AIO, canonical ownership, or rank caps apply.
             </TooltipContent>
           </Tooltip>
 
@@ -415,7 +415,7 @@ function OverviewHeader({
             </span>
           </div>
           <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">
-            Storyblok · GSC · Ahrefs
+            Storyblok · GSC · DataForSEO
           </div>
         </div>
       )}
@@ -589,9 +589,8 @@ function PageRow({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="left" className="max-w-xs">
-                Estimated extra clicks/mo if this page hit the typical CTR for its current
-                ranking position. Based on impressions × expected CTR − actual clicks across all
-                open clusters.
+                Raw extra clicks/mo before SERP caps. Cluster cards discount this where AIO,
+                canonical ownership, or rank caps apply.
               </TooltipContent>
             </Tooltip>
           ) : (

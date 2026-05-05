@@ -1,6 +1,6 @@
 -- Phase 1A · Query findings
 -- ────────────────────────────────────────────────────────────────────────────
--- The atomic per-query GSC + Ahrefs evidence backing each cluster. One row
+-- The atomic per-query GSC + DataForSEO evidence backing each cluster. One row
 -- per (page, query). Replaces the per-query columns previously stored on
 -- cp_seo_opportunities — those will be dropped in a follow-up migration once
 -- the new pipeline has populated this table.
@@ -22,10 +22,10 @@ CREATE TABLE public.cp_seo_query_findings (
   ctr_pct           numeric(5,2),
   expected_ctr_pct  numeric(5,2),
 
-  -- Ahrefs enrichment
+  -- DataForSEO enrichment
   kd                integer,
   volume            integer,
-  ahrefs_intents    text,                                     -- pipe-separated: 'commercial|branded'
+  dataforseo_intents text,                                        -- pipe-separated: 'commercial|branded'
   serp_features     text,
 
   -- Token-rule heuristics (kept for transparency in 1A; superseded by LLM coverage in 1B)

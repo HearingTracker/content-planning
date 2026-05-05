@@ -1,5 +1,5 @@
--- Ahrefs Keywords Explorer overview cache.
--- Backs lib/seo/ahrefs.ts loadAhrefs() so repeated pipeline runs only pay
+-- DataForSEO keyword overview cache.
+-- Backs lib/seo/keyword-data.ts loadKeywordData() so repeated pipeline runs only pay
 -- API units for newly seen keywords. KD/volume drift slowly so a 14-day TTL
 -- in the application layer is the typical refresh cadence.
 

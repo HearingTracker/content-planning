@@ -3,8 +3,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query-keys";
 import {
+  createManualSeoQueueItem,
+  getManualSeoQueueItems,
   getSeoPages,
   getSeoOpportunities,
+  updateManualSeoQueueItemStatus,
   updateOpportunityStatus,
   assignOpportunity,
   updateOpportunityNotes,
@@ -15,6 +18,7 @@ import {
   getSynthesisFindings,
 } from "@/app/(dashboard)/seo/actions";
 import type {
+  SeoManualQueueInput,
   SeoOppStatus,
   SeoSyncJob,
   SeoSynthesisKindKey,
@@ -24,6 +28,34 @@ export function useSeoPages() {
   return useQuery({
     queryKey: queryKeys.seo.pages(),
     queryFn: getSeoPages,
+  });
+}
+
+export function useManualSeoQueueItems() {
+  return useQuery({
+    queryKey: queryKeys.seo.manualQueue(),
+    queryFn: getManualSeoQueueItems,
+  });
+}
+
+export function useCreateManualSeoQueueItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: SeoManualQueueInput) => createManualSeoQueueItem(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.seo.all });
+    },
+  });
+}
+
+export function useUpdateManualSeoQueueItemStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, status }: { id: number; status: SeoOppStatus }) =>
+      updateManualSeoQueueItemStatus(id, status),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.seo.all });
+    },
   });
 }
 

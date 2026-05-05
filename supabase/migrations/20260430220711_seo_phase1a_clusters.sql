@@ -25,9 +25,9 @@ CREATE TABLE public.cp_seo_clusters (
   retailer            text,                                   -- 'costco', 'hear.com' — separate axis from brand
   product_family      text,                                   -- 'lumity', 'evolv ai' — nullable
 
-  -- Intent (Ahrefs prior in 1A; LLM reconciliation lands in 1B)
-  ahrefs_intent_prior        text,
-  ahrefs_intent_mix          jsonb,
+  -- Intent (DataForSEO prior in 1A; LLM reconciliation lands in 1B)
+  dataforseo_intent_prior        text,
+  dataforseo_intent_mix          jsonb,
   llm_intent                 text,
   intent_confidence          numeric(3,2),
   intent_disagreement_reason text,

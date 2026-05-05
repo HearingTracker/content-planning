@@ -1,5 +1,138 @@
 export type SeoOppStatus = "open" | "in_progress" | "done" | "dismissed";
 
+export type SeoManualQueueTaskType =
+  | "article_update"
+  | "update_event"
+  | "manual_article"
+  | "reopen_monitor";
+
+export type SeoManualQueuePriority = "low" | "medium" | "high" | "urgent";
+
+export type SeoManualQueueItem = {
+  id: number;
+  task_type: SeoManualQueueTaskType;
+  page: string | null;
+  target_title: string | null;
+  summary: string;
+  evidence: string | null;
+  source_url: string | null;
+  event_date: string | null;
+  priority: SeoManualQueuePriority;
+  status: SeoOppStatus;
+  linked_opportunity_id: number | null;
+  linked_synthesis_finding_id: number | null;
+  assigned_to: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+};
+
+export type SeoManualQueueInput = {
+  task_type: SeoManualQueueTaskType;
+  page?: string | null;
+  target_title?: string | null;
+  summary: string;
+  evidence?: string | null;
+  source_url?: string | null;
+  event_date?: string | null;
+  priority: SeoManualQueuePriority;
+  linked_opportunity_id?: number | null;
+  linked_synthesis_finding_id?: number | null;
+};
+
+export type SeoStandaloneArticleAudit = {
+  recommended: boolean;
+  score: number;
+  reason: string;
+  candidate_queries: string[];
+  criteria: Record<string, boolean>;
+  evidence: {
+    informational_or_commercial_queries?: string[];
+    total_impressions?: number;
+    total_volume?: number;
+    member_count?: number;
+    anchor_count?: number;
+    topic_score_median?: number | null;
+    topic_score_max?: number | null;
+    external_canonical_anchor_count?: number;
+  };
+};
+
+export type SeoRecommendationAudit = {
+  recommendation_trigger: string;
+  freshness_trigger: {
+    triggered: boolean;
+    reason: string;
+    signals: string[];
+    content_age_days: number | null;
+  };
+  intent_trigger: {
+    triggered: boolean;
+    reason: string;
+    intents: string[];
+    navigational_gate: boolean;
+  };
+  content_gap_trigger: {
+    triggered: boolean;
+    reason: string;
+    missing_or_marginal_queries: string[];
+    median_topic_score: number | null;
+  };
+  serp_change_trigger: {
+    triggered: boolean;
+    reason: string;
+    signals: string[];
+  };
+  confidence_rationale: string;
+};
+
+export type SeoEditorGapChecklistItem = {
+  id: string;
+  label: string;
+  status: "required" | "recommended" | "not_applicable";
+  reason: string;
+};
+
+export type SeoInternalLinkRecommendation = {
+  source_page: string;
+  target_page: string;
+  suggested_anchor_text: string;
+  reason: string;
+  confidence: number;
+  direction: "from_current_page" | "to_current_page" | "both";
+};
+
+export type SeoAioSerpAudit = {
+  aio_present_on_serp: boolean;
+  aio_present_on_serp_queries: string[];
+  aio_citation_seen: boolean;
+  aio_citation_seen_queries: string[];
+  ai_platform_citation_seen: null;
+  citation_source: string | null;
+  note: string;
+};
+
+export type SeoPrioritizationAudit = {
+  formula_version: string;
+  computed_score: number;
+  legacy_actionability_score: number;
+  effort_estimate: "low" | "medium" | "high";
+  manual_priority_override: SeoManualQueuePriority | null;
+  inputs: Record<string, number>;
+  evidence: {
+    total_impressions?: number;
+    total_volume?: number;
+    missed_clicks?: number;
+    earnings_90d?: number;
+    conversions_90d?: number;
+    avg_rank_decline_positions?: number;
+    avg_rank_volatility_positions?: number;
+    confidence?: number | null;
+  };
+  rationale: string[];
+};
+
 // Legacy enum (still on the DB for cp_seo_opportunities.kind, retained until
 // query-level columns are dropped in a Phase 1A follow-up). The active kind
 // system is the text-based key referencing cp_seo_opportunity_kinds — see
@@ -79,7 +212,7 @@ export type SeoOpportunity = {
   brand: string | null;
   retailer: string | null;
   product_family: string | null;
-  ahrefs_intent_prior: string | null;
+  dataforseo_intent_prior: string | null;
   member_count: number;
   total_impressions: number;
   total_volume: number;
@@ -130,6 +263,13 @@ export type SeoOpportunity = {
   external_canonicals: Record<string, { url: string; position: number | null }>;
   /** Pages that compete on at least one cluster member, deduped. */
   cannibal_pages: string[];
+
+  standalone_article: SeoStandaloneArticleAudit | null;
+  recommendation_audit: SeoRecommendationAudit | null;
+  editor_gap_checklist: SeoEditorGapChecklistItem[];
+  internal_link_recommendations: SeoInternalLinkRecommendation[];
+  aio_serp: SeoAioSerpAudit | null;
+  prioritization: SeoPrioritizationAudit | null;
 
   // Joined assignee profile, optional
   assignee?: { display_name: string | null; avatar_url: string | null; email: string | null } | null;

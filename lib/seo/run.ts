@@ -1,6 +1,6 @@
 // Orchestrator. Pulls GSC striking-distance keywords, joins with newsletter-builder
 // page revenue, classifies each keyword against page metadata (Storyblok or HTML),
-// enriches with Ahrefs KD, and returns plain JS objects for the cron route to
+// enriches with DataForSEO keyword metrics, and returns plain JS objects for the cron route to
 // persist.
 
 import { fetchGSCRows } from "./gsc";
@@ -52,11 +52,11 @@ export type RunOptions = {
   maxPosition?: number;   // default 15
   minImpressions?: number;// default 50
   topPerPage?: number;    // default 10. Set to 0/null via includeAllForClustering to disable cap.
-  country?: string;       // default 'us' (Ahrefs)
+  country?: string;       // default 'us' (DataForSEO)
   includePrimary?: boolean; // default false (skip head terms)
   /**
    * Phase 1A clustering mode: returns every striking-distance keyword on
-   * revenue pages with full classification + Ahrefs enrichment, with no
+   * revenue pages with full classification + DataForSEO enrichment, with no
    * primary filter and no per-page cap. Caller is responsible for the
    * downstream cluster-level capping.
    */

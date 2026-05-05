@@ -141,8 +141,16 @@ const CoverageSchema = z.object({
 //     actionable advice to needs_review so authors do not receive weak tasks.
 //     Ambiguous/high-risk first-pass results can optionally escalate to a
 //     stronger coverage model via SEO_COVERAGE_ESCALATION_MODEL.
+// v15: add a deterministic navigational-intent gate. Clusters whose DataForSEO
+//     prior, anchors, or impression share are dominated by navigational
+//     intent are forced to wrong_page/blocked so authors do not optimize
+//     article copy for user-path queries.
+// v16: add deterministic editor-facing audit fields: standalone-article
+//     criteria, recommendation triggers, human gap checklist, explicit
+//     AIO-as-SERP-feature naming, internal-link recommendations, and
+//     prioritization hooks.
 export const COVERAGE_PROMPT_VERSION =
-  process.env.SEO_COVERAGE_PROMPT_VERSION ?? "v14";
+  process.env.SEO_COVERAGE_PROMPT_VERSION ?? "v16";
 
 function resolveModelId(): string {
   const raw = process.env.SEO_COVERAGE_MODEL ?? process.env.SEO_LABEL_MODEL;
@@ -170,6 +178,7 @@ You will be given:
 - The page's body text (may be truncated).
 - A cluster of related Google Search Console queries the page ranks for in striking distance (positions 4–15), with TWO body-coverage signals per query: (a) "phrase×N in body" — exact-string occurrences of the literal query in the body text; (b) "topic NN%" — semantic max-cosine between the query embedding and the page's section embeddings (title, H1, every heading, body chunks). A topic score ≥55% means the page already has a section addressing that topic even if the literal phrase isn't there.
 - Aggregate ranking and CTR metrics for the cluster.
+- DataForSEO intent labels. Navigational-dominant clusters are blocked deterministically after classification; do not invent article-update work for user-path intent.
 - Anchor queries — the cluster's deterministically ranked top 3–5 low-hanging-fruit queries (high volume / low difficulty / close to top of striking distance), split into actionable anchors and canonical-owned deferrals. The recommendation MUST explicitly name at least one actionable anchor when any exists.
 - Cannibalization signals — for any cluster member that ALSO ranks in the LIVE top-20 organic SERP via another HearingTracker page, the competitor URL plus the queries that competitor currently wins (its strongest in-cluster rankings on this site). These are SERP-verified, not GSC-noise: a URL listed here is genuinely competing.
 - AI Overview signals — for each anchor query, whether the live SERP shows an AI Overview panel and whether THIS page is cited as one of the AIO sources. AI Overviews suppress organic CTR by ~30–60%; if a majority of cluster impressions sit on AIO-present queries, the standard expected-CTR baseline overstates the achievable ceiling. The cluster summary "AIO on N of M anchors (P% of cluster impressions)" tells you how dominant the AIO suppression is.
@@ -195,6 +204,7 @@ States (mutually exclusive — pick the BEST fit):
 
 Decision guidance:
 - Prefer coverage_partial over intent_gap when at least one heading or body passage already addresses a sibling angle of the cluster.
+- Do NOT recommend article updates for navigational-dominant clusters. If the query intent is primarily to reach a login, brand site, store page, account page, support portal, or other destination, the correct outcome is to block article work and route the issue outside the content update queue.
 - Prefer wrong_page over cede when there is NO cannibalization signal — wrong_page means "not the right topic for this page," cede means "right topic, wrong page."
 - Pick consolidate or cede ONLY when at least one anchor or member query has competing pages listed.
 - Before recommending consolidate, you MUST acknowledge in the recommendation what each de-target sibling currently wins (cite a winning query by name). If ANY listed competitor wins an anchor-tier query (pos ≤10 AND KD ≤20), prefer coverage_strong or snippet_ctr instead — that sibling is doing its job and de-targeting it would forfeit real traffic.
@@ -276,6 +286,112 @@ function truncateBody(body: string, max = MAX_BODY_CHARS): string {
 }
 
 type EditorActionability = "ready" | "review" | "monitor" | "blocked";
+
+const STANDALONE_MIN_IMPRESSIONS = Number(
+  process.env.SEO_STANDALONE_ARTICLE_MIN_IMPRESSIONS ?? 350,
+);
+const STANDALONE_MIN_VOLUME = Number(
+  process.env.SEO_STANDALONE_ARTICLE_MIN_VOLUME ?? 500,
+);
+const STANDALONE_MIN_MEMBER_COUNT = Number(
+  process.env.SEO_STANDALONE_ARTICLE_MIN_MEMBERS ?? 4,
+);
+
+export type StandaloneArticleAudit = {
+  recommended: boolean;
+  score: number;
+  reason: string;
+  candidate_queries: string[];
+  criteria: {
+    not_navigational_gated: boolean;
+    supported_intent: boolean;
+    meaningful_demand: boolean;
+    partial_subsection_coverage: boolean;
+    dedicated_article_depth: boolean;
+    no_existing_canonical: boolean;
+  };
+  evidence: {
+    informational_or_commercial_queries: string[];
+    total_impressions: number;
+    total_volume: number;
+    member_count: number;
+    anchor_count: number;
+    topic_score_median: number | null;
+    topic_score_max: number | null;
+    external_canonical_anchor_count: number;
+  };
+};
+
+export type RecommendationTriggerAudit = {
+  recommendation_trigger:
+    | "content_gap"
+    | "standalone_article_candidate"
+    | "recoverable_ctr_gap"
+    | "aio_present_on_serp_without_ht_source"
+    | "cannibalization"
+    | "external_canonical"
+    | "navigational_intent_block"
+    | "wrong_page_or_navigation"
+    | "monitor"
+    | "review_guardrail";
+  freshness_trigger: {
+    triggered: boolean;
+    reason: string;
+    signals: string[];
+    content_age_days: number | null;
+  };
+  intent_trigger: {
+    triggered: boolean;
+    reason: string;
+    intents: string[];
+    navigational_gate: boolean;
+  };
+  content_gap_trigger: {
+    triggered: boolean;
+    reason: string;
+    missing_or_marginal_queries: string[];
+    median_topic_score: number | null;
+  };
+  serp_change_trigger: {
+    triggered: boolean;
+    reason: string;
+    signals: string[];
+  };
+  confidence_rationale: string;
+};
+
+export type EditorGapChecklistItem = {
+  id:
+    | "fact_checking"
+    | "new_information_news"
+    | "testing_data"
+    | "first_hand_user_feedback"
+    | "formatting_readability"
+    | "screenshots_media"
+    | "compliance_review";
+  label: string;
+  status: "required" | "recommended" | "not_applicable";
+  reason: string;
+};
+
+export type InternalLinkRecommendation = {
+  source_page: string;
+  target_page: string;
+  suggested_anchor_text: string;
+  reason: string;
+  confidence: number;
+  direction: "from_current_page" | "to_current_page" | "both";
+};
+
+export type AioSerpAudit = {
+  aio_present_on_serp: boolean;
+  aio_present_on_serp_queries: string[];
+  aio_citation_seen: boolean;
+  aio_citation_seen_queries: string[];
+  ai_platform_citation_seen: null;
+  citation_source: "google_serp_aio_sources" | null;
+  note: string;
+};
 
 const AUTHOR_ACTIONABLE_KINDS = new Set<CoverageKind>([
   "coverage_partial",
@@ -520,6 +636,449 @@ function summarizeTopicScores(members: { topic_coverage_score?: number | null }[
   };
 }
 
+function intentTags(raw: string | null | undefined): string[] {
+  return (raw ?? "")
+    .toLowerCase()
+    .split(/[|,]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function hasNavigationalIntent(raw: string | null | undefined): boolean {
+  return intentTags(raw).includes("navigational");
+}
+
+function summarizeNavigationalIntent(input: CoverageInput): {
+  gate: boolean;
+  impression_share: number;
+  supported_intent_share: number;
+  anchor_queries: string[];
+  member_queries: string[];
+} {
+  let totalImpressions = 0;
+  let navigationalImpressions = 0;
+  let supportedEditorialImpressions = 0;
+  const navigationalMembers: string[] = [];
+  const memberByQuery = new Map(input.members.map((m) => [m.query, m]));
+  let topMember: CoverageMemberSignal | null = null;
+
+  for (const m of input.members) {
+    const imp = m.impressions ?? 0;
+    totalImpressions += imp;
+    if (!topMember || imp > (topMember.impressions ?? 0)) topMember = m;
+    if (hasNavigationalIntent(m.dataforseo_intents)) {
+      navigationalMembers.push(m.query);
+      navigationalImpressions += imp;
+    }
+    if (hasStandaloneSupportedIntent(m.dataforseo_intents)) {
+      supportedEditorialImpressions += imp;
+    }
+  }
+
+  const impressionShare = totalImpressions > 0
+    ? navigationalImpressions / totalImpressions
+    : input.members.length > 0
+      ? navigationalMembers.length / input.members.length
+      : 0;
+  const navigationalAnchors = input.anchors
+    .filter((a) => hasNavigationalIntent(memberByQuery.get(a.query)?.dataforseo_intents))
+    .map((a) => a.query);
+  const supportedIntentShare = totalImpressions > 0
+    ? supportedEditorialImpressions / totalImpressions
+    : input.members.length > 0
+      ? input.members.filter((m) => hasStandaloneSupportedIntent(m.dataforseo_intents)).length / input.members.length
+      : 0;
+  const priorIsNavigational = hasNavigationalIntent(input.dataForSeoIntentPrior);
+  const allAnchorsNavigational =
+    input.anchors.length > 0 && navigationalAnchors.length === input.anchors.length;
+  const canonicalNavigational = hasNavigationalIntent(
+    memberByQuery.get(input.canonicalQuery)?.dataforseo_intents,
+  );
+  const topNavigational = hasNavigationalIntent(topMember?.dataforseo_intents);
+  const dominantNavigational =
+    impressionShare >= 0.5 && supportedIntentShare < 0.25;
+  const priorConfirmed =
+    priorIsNavigational && impressionShare >= 0.45 && supportedIntentShare < 0.35;
+  const navigationalHead =
+    (priorIsNavigational || canonicalNavigational) && topNavigational && impressionShare >= 0.35 && supportedIntentShare < 0.35;
+
+  return {
+    gate: allAnchorsNavigational || dominantNavigational || priorConfirmed || navigationalHead,
+    impression_share: Math.round(impressionShare * 1000) / 1000,
+    supported_intent_share: Math.round(supportedIntentShare * 1000) / 1000,
+    anchor_queries: navigationalAnchors,
+    member_queries: navigationalMembers,
+  };
+}
+
+function hasStandaloneSupportedIntent(raw: string | null | undefined): boolean {
+  return intentTags(raw).some((tag) => {
+    const normalized = tag.replace(/[_-]+/g, " ");
+    return normalized === "informational"
+      || normalized === "commercial"
+      || normalized === "commercial investigation";
+  });
+}
+
+function uniqueIntentTags(input: CoverageInput): string[] {
+  const tags = new Set<string>();
+  if (input.dataForSeoIntentPrior) {
+    for (const tag of intentTags(input.dataForSeoIntentPrior)) tags.add(tag);
+  }
+  for (const m of input.members) {
+    for (const tag of intentTags(m.dataforseo_intents)) tags.add(tag);
+  }
+  return [...tags].sort();
+}
+
+function totalMemberImpressions(input: CoverageInput): number {
+  return input.members.reduce((sum, m) => sum + (m.impressions ?? 0), 0);
+}
+
+function totalMemberVolume(input: CoverageInput): number {
+  return input.members.reduce((sum, m) => sum + (m.volume ?? 0), 0);
+}
+
+function topicScores(input: CoverageInput): number[] {
+  return input.members
+    .map((m) => m.topic_coverage_score)
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+    .sort((a, b) => a - b);
+}
+
+function medianTopicScore(input: CoverageInput): number | null {
+  const scores = topicScores(input);
+  if (scores.length === 0) return null;
+  return Math.round(scores[Math.floor(scores.length / 2)] * 1000) / 1000;
+}
+
+function maxTopicScore(input: CoverageInput): number | null {
+  const scores = topicScores(input);
+  if (scores.length === 0) return null;
+  return Math.round(scores[scores.length - 1] * 1000) / 1000;
+}
+
+function informationalOrCommercialQueries(input: CoverageInput): string[] {
+  return input.members
+    .filter((m) => hasStandaloneSupportedIntent(m.dataforseo_intents))
+    .sort((a, b) => (b.impressions ?? 0) - (a.impressions ?? 0))
+    .map((m) => m.query);
+}
+
+function scoreStandaloneArticleCandidate(args: {
+  input: CoverageInput;
+  kind: CoverageKind;
+  navigationalGate: boolean;
+  externalCanonicalAnchorCount: number;
+}): StandaloneArticleAudit {
+  const { input, kind, navigationalGate, externalCanonicalAnchorCount } = args;
+  const totalImpressions = totalMemberImpressions(input);
+  const totalVolume = totalMemberVolume(input);
+  const medianScore = medianTopicScore(input);
+  const maxScore = maxTopicScore(input);
+  const supportedQueries = informationalOrCommercialQueries(input);
+  const supportedIntent =
+    hasStandaloneSupportedIntent(input.dataForSeoIntentPrior)
+    || supportedQueries.length > 0;
+  const meaningfulDemand =
+    totalImpressions >= STANDALONE_MIN_IMPRESSIONS
+    || totalVolume >= STANDALONE_MIN_VOLUME
+    || input.members.length >= STANDALONE_MIN_MEMBER_COUNT + 1;
+  const touchedByPage =
+    maxScore != null && maxScore >= 0.4;
+  const stillIncomplete =
+    medianScore == null || medianScore < 0.62;
+  const missingOrMarginalCount = input.members.filter(
+    (m) => m.topic_coverage_score == null || m.topic_coverage_score < 0.55,
+  ).length;
+  const partialSubsectionCoverage =
+    touchedByPage && stillIncomplete && missingOrMarginalCount >= 2;
+  const dedicatedArticleDepth =
+    input.members.length >= STANDALONE_MIN_MEMBER_COUNT
+    && (input.anchors.length >= 2 || supportedQueries.length >= 2)
+    && (totalImpressions >= Math.floor(STANDALONE_MIN_IMPRESSIONS * 0.6)
+      || totalVolume >= Math.floor(STANDALONE_MIN_VOLUME * 0.6));
+  const noExistingCanonical =
+    externalCanonicalAnchorCount === 0
+    && kind !== "coverage_strong"
+    && kind !== "cede"
+    && kind !== "wrong_page";
+
+  const criteria = {
+    not_navigational_gated: !navigationalGate,
+    supported_intent: supportedIntent,
+    meaningful_demand: meaningfulDemand,
+    partial_subsection_coverage: partialSubsectionCoverage,
+    dedicated_article_depth: dedicatedArticleDepth,
+    no_existing_canonical: noExistingCanonical,
+  };
+
+  const score =
+    (criteria.not_navigational_gated ? 15 : 0)
+    + (criteria.supported_intent ? 15 : 0)
+    + (criteria.meaningful_demand ? 20 : 0)
+    + (criteria.partial_subsection_coverage ? 20 : 0)
+    + (criteria.dedicated_article_depth ? 15 : 0)
+    + (criteria.no_existing_canonical ? 15 : 0);
+
+  const recommended =
+    Object.values(criteria).every(Boolean)
+    && kind !== "needs_review";
+
+  const candidateQueries = (
+    input.anchors.length > 0
+      ? input.anchors.filter((a) => !a.external_canonical).map((a) => a.query)
+      : supportedQueries
+  ).slice(0, 4);
+
+  const failed: string[] = [];
+  if (!criteria.not_navigational_gated) failed.push("navigational intent dominates");
+  if (!criteria.supported_intent) failed.push("intent is not informational or commercial investigation");
+  if (!criteria.meaningful_demand) failed.push("demand is below the standalone threshold");
+  if (!criteria.partial_subsection_coverage) failed.push("current page does not look like a partial subsection match");
+  if (!criteria.dedicated_article_depth) failed.push("query set is too thin for a dedicated article");
+  if (!criteria.no_existing_canonical) failed.push("an existing canonical or non-update verdict already owns the intent");
+  if (kind === "needs_review") failed.push("classifier routed this to review");
+
+  const demandLabel = `${totalImpressions.toLocaleString()} impressions/mo, ${totalVolume.toLocaleString()} search volume, ${input.members.length} related queries`;
+  const topicLabel = medianScore == null
+    ? "topic coverage unknown"
+    : `median topic coverage ${Math.round(medianScore * 100)}%`;
+  const reason = recommended
+    ? `Standalone article candidate: ${candidateQueries.length > 0 ? `"${candidateQueries[0]}"` : input.canonicalQuery} has ${demandLabel}; this page only partially covers it (${topicLabel}) and no canonical page already satisfies the intent.`
+    : `Keep as a page update or review item: ${failed.join("; ")}.`;
+
+  return {
+    recommended,
+    score,
+    reason,
+    candidate_queries: candidateQueries,
+    criteria,
+    evidence: {
+      informational_or_commercial_queries: supportedQueries.slice(0, 10),
+      total_impressions: totalImpressions,
+      total_volume: totalVolume,
+      member_count: input.members.length,
+      anchor_count: input.anchors.length,
+      topic_score_median: medianScore,
+      topic_score_max: maxScore,
+      external_canonical_anchor_count: externalCanonicalAnchorCount,
+    },
+  };
+}
+
+function contentAgeDays(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const time = new Date(iso).getTime();
+  if (!Number.isFinite(time)) return null;
+  return Math.max(0, Math.floor((Date.now() - time) / 86_400_000));
+}
+
+function titleYearSignal(title: string | null | undefined): string | null {
+  const years = (title ?? "").match(/\b20\d{2}\b/g);
+  if (!years || years.length === 0) return null;
+  const currentYear = new Date().getFullYear();
+  const newest = Math.max(...years.map(Number));
+  return newest < currentYear ? `title_year_${newest}` : null;
+}
+
+function clusterTextForRules(input: CoverageInput, recommendation = ""): string {
+  return [
+    input.pageTitle,
+    input.clusterLabel,
+    input.canonicalQuery,
+    input.dataForSeoIntentPrior,
+    recommendation,
+    ...input.members.map((m) => `${m.query} ${m.dataforseo_intents ?? ""}`),
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function buildAioSerpAudit(input: CoverageInput): AioSerpAudit {
+  const aioPresent = input.anchorAioPresence.filter((a) => a.aiOverview);
+  const cited = aioPresent.filter((a) => a.cited);
+  return {
+    aio_present_on_serp: aioPresent.length > 0,
+    aio_present_on_serp_queries: aioPresent.map((a) => a.query),
+    aio_citation_seen: cited.length > 0,
+    aio_citation_seen_queries: cited.map((a) => a.query),
+    ai_platform_citation_seen: null,
+    citation_source: aioPresent.length > 0 ? "google_serp_aio_sources" : null,
+    note: "AIO fields describe Google SERP feature/source data only. AI platform citation tracking is not implemented.",
+  };
+}
+
+function buildRecommendationTriggers(args: {
+  input: CoverageInput;
+  kind: CoverageKind;
+  confidence: number;
+  navigationalGate: boolean;
+  externalCanonicalAnchorCount: number;
+  nonCanonicalAioLossAnchors: string[];
+  cannibalMemberCount: number;
+  standaloneArticle: StandaloneArticleAudit;
+}): RecommendationTriggerAudit {
+  const {
+    input,
+    kind,
+    confidence,
+    navigationalGate,
+    externalCanonicalAnchorCount,
+    nonCanonicalAioLossAnchors,
+    cannibalMemberCount,
+    standaloneArticle,
+  } = args;
+  const ageDays = contentAgeDays(input.pageContentModifiedAt);
+  const freshnessSignals: string[] = [];
+  if (ageDays != null && ageDays > 365) freshnessSignals.push("content_age_over_365_days");
+  const yearSignal = titleYearSignal(input.pageTitle);
+  if (yearSignal) freshnessSignals.push(yearSignal);
+  const ruleText = clusterTextForRules(input);
+  if (/\b(latest|newest|current|updated|202[5-9]|price|prices|cost|models?)\b/.test(ruleText)) {
+    freshnessSignals.push("query_or_topic_requires_current_details");
+  }
+
+  const missingOrMarginal = input.members
+    .filter((m) => m.topic_coverage_score == null || m.topic_coverage_score < 0.55)
+    .sort((a, b) => (b.impressions ?? 0) - (a.impressions ?? 0))
+    .map((m) => m.query)
+    .slice(0, 5);
+  const contentGapTriggered =
+    kind === "coverage_partial"
+    || kind === "intent_gap"
+    || standaloneArticle.recommended
+    || missingOrMarginal.length >= 2;
+
+  const serpSignals: string[] = [];
+  const aioAudit = buildAioSerpAudit(input);
+  if (aioAudit.aio_present_on_serp) serpSignals.push("aio_present_on_serp");
+  if (nonCanonicalAioLossAnchors.length > 0) serpSignals.push("aio_present_without_this_page_as_serp_source");
+  if (externalCanonicalAnchorCount > 0) serpSignals.push("external_canonical_page_in_top_10");
+  if (cannibalMemberCount > 0) serpSignals.push("serp_verified_cannibalization");
+  if (input.hopelessQueries.length > 0) serpSignals.push("ctr_gap_structural_from_position");
+
+  const recommendationTrigger: RecommendationTriggerAudit["recommendation_trigger"] =
+    navigationalGate ? "navigational_intent_block"
+      : standaloneArticle.recommended ? "standalone_article_candidate"
+      : kind === "coverage_partial" || kind === "intent_gap" ? "content_gap"
+      : kind === "snippet_ctr" ? "recoverable_ctr_gap"
+      : kind === "ai_overview_loss" ? "aio_present_on_serp_without_ht_source"
+      : kind === "consolidate" ? "cannibalization"
+      : kind === "cede" ? "external_canonical"
+      : kind === "wrong_page" ? "wrong_page_or_navigation"
+      : kind === "coverage_strong" ? "monitor"
+      : "review_guardrail";
+
+  const intents = uniqueIntentTags(input);
+  const supportedIntent = hasStandaloneSupportedIntent(input.dataForSeoIntentPrior)
+    || input.members.some((m) => hasStandaloneSupportedIntent(m.dataforseo_intents));
+
+  return {
+    recommendation_trigger: recommendationTrigger,
+    freshness_trigger: {
+      triggered: freshnessSignals.length > 0 && kind !== "coverage_strong",
+      reason: freshnessSignals.length > 0
+        ? "Freshness-sensitive terms or page age mean a human should verify current facts."
+        : "No deterministic freshness signal found in the cluster pass.",
+      signals: [...new Set(freshnessSignals)],
+      content_age_days: ageDays,
+    },
+    intent_trigger: {
+      triggered: navigationalGate || supportedIntent,
+      reason: navigationalGate
+        ? "Navigational intent blocks article-update work."
+        : supportedIntent
+          ? "Informational or commercial investigation intent supports editorial work."
+          : "No supported editorial intent signal found.",
+      intents,
+      navigational_gate: navigationalGate,
+    },
+    content_gap_trigger: {
+      triggered: contentGapTriggered,
+      reason: contentGapTriggered
+        ? "Topic coverage scores show missing or marginal coverage on material member queries."
+        : "Topic coverage scores do not show a material body gap.",
+      missing_or_marginal_queries: missingOrMarginal,
+      median_topic_score: medianTopicScore(input),
+    },
+    serp_change_trigger: {
+      triggered: serpSignals.length > 0,
+      reason: serpSignals.length > 0
+        ? "Live SERP-derived features affected the recommendation. AIO is feature/source data, not AI-platform citation tracking."
+        : "No live SERP feature or canonicalization trigger affected this recommendation.",
+      signals: [...new Set(serpSignals)],
+    },
+    confidence_rationale: confidence >= 0.8
+      ? "High confidence: deterministic guardrails and classifier output agree."
+      : confidence >= 0.6
+        ? "Author-ready confidence, but the checklist should still be completed before publishing."
+        : "Low confidence: routed to editor review before assigning or publishing.",
+  };
+}
+
+function buildEditorGapChecklist(args: {
+  input: CoverageInput;
+  kind: CoverageKind;
+  editorActionability: EditorActionability;
+  triggers: RecommendationTriggerAudit;
+  standaloneArticle: StandaloneArticleAudit;
+  recommendation: string;
+}): EditorGapChecklistItem[] {
+  const { input, kind, editorActionability, triggers, standaloneArticle, recommendation } = args;
+  const text = clusterTextForRules(input, recommendation);
+  const actionable = editorActionability === "ready" || kind === "coverage_partial" || kind === "intent_gap" || standaloneArticle.recommended;
+  const productOrComparison = /\b(best|review|reviews|compare|comparison|vs|model|models|brand|otc|prescription|features?|battery|warranty|return|price|cost)\b/.test(text)
+    || Boolean(input.brand || input.productFamily || input.retailer);
+  const medicalOrCompliance = /\b(fda|medical|doctor|audiologist|hearing loss|tinnitus|medicare|insurance|otc|prescription|legal|law|compliance)\b/.test(text);
+  const howToOrMedia = /\b(screenshot|screenshots|app|setup|pair|how to|step|table|chart|comparison|features?)\b/.test(text);
+
+  return [
+    {
+      id: "fact_checking",
+      label: "Fact checking",
+      status: actionable ? "required" : "recommended",
+      reason: "The system cannot verify factual accuracy, prices, warranties, dates, or source claims.",
+    },
+    {
+      id: "new_information_news",
+      label: "New information/news",
+      status: triggers.freshness_trigger.triggered ? "required" : actionable ? "recommended" : "not_applicable",
+      reason: triggers.freshness_trigger.triggered
+        ? "Freshness signals were detected; check for recent product, policy, price, or news changes."
+        : "No freshness signal was detected, but recent market changes may still matter.",
+    },
+    {
+      id: "testing_data",
+      label: "Testing data",
+      status: productOrComparison && actionable ? "required" : actionable ? "recommended" : "not_applicable",
+      reason: "The system cannot confirm first-party testing, HearAdvisor/lab data, measurements, or product-handling evidence.",
+    },
+    {
+      id: "first_hand_user_feedback",
+      label: "First-hand user feedback",
+      status: productOrComparison && actionable ? "required" : actionable ? "recommended" : "not_applicable",
+      reason: "The system cannot verify customer interviews, audiologist notes, or hands-on usage feedback.",
+    },
+    {
+      id: "formatting_readability",
+      label: "Formatting/readability",
+      status: actionable ? "required" : "recommended",
+      reason: "The system cannot judge final scanability, section order, table clarity, or whether the edit reads naturally.",
+    },
+    {
+      id: "screenshots_media",
+      label: "Screenshots/media",
+      status: howToOrMedia && actionable ? "required" : actionable ? "recommended" : "not_applicable",
+      reason: "The system cannot capture screenshots, product photos, diagrams, or verify media recency.",
+    },
+    {
+      id: "compliance_review",
+      label: "Compliance/medical/legal review",
+      status: medicalOrCompliance && actionable ? "required" : medicalOrCompliance ? "recommended" : "not_applicable",
+      reason: "The system cannot clear medical, legal, FDA/OTC, insurance, or claims-compliance risk.",
+    },
+  ];
+}
+
 function formatHeadings(headings: Heading[] | null | undefined): string {
   if (!headings || headings.length === 0) return "(no headings detected)";
   return headings
@@ -567,6 +1126,7 @@ export type CoverageMemberSignal = {
   /** Per-query SEO signals so the LLM can identify low-hanging fruit. */
   kd: number | null;
   volume: number | null;
+  dataforseo_intents?: string | null;
   position: number | null;
   impressions: number | null;
   /** Query-level GSC clicks. Used to compute per-query CTR. */
@@ -608,6 +1168,7 @@ export type CoverageInput = {
   metaDescription: string | null;
   headings: Heading[];
   bodyText: string;
+  pageContentModifiedAt?: string | null;
 
   clusterLabel: string;
   canonicalQuery: string;
@@ -615,7 +1176,7 @@ export type CoverageInput = {
   brand: string | null;
   retailer: string | null;
   productFamily: string | null;
-  ahrefsIntentPrior: string | null;
+  dataForSeoIntentPrior: string | null;
 
   members: CoverageMemberSignal[];
 
@@ -664,6 +1225,13 @@ export type CoverageInput = {
   avgPosition: number | null;
   weightedCtrPct: number | null;
   expectedCtrPct: number | null;
+
+  /**
+   * Deterministic link recommendations generated from the site link graph and
+   * query/topic overlap before the LLM call. These are audit data, not model
+   * prose, so editors can see why a link was proposed.
+   */
+  internalLinkRecommendations?: InternalLinkRecommendation[];
 };
 
 export type CoverageResult = {
@@ -703,6 +1271,22 @@ export type CoverageResult = {
     external_canonical_anchor_count: number;
     canonical_owned_anchor_queries?: string[];
     actionable_anchor_queries?: string[];
+    /** Navigational-intent hard gate (v15+). */
+      navigational_intent_gate?: boolean;
+      navigational_impression_share?: number;
+      supported_editorial_intent_share?: number;
+      navigational_anchor_queries?: string[];
+    standalone_article?: StandaloneArticleAudit;
+    recommendation_audit?: RecommendationTriggerAudit;
+    editor_gap_checklist?: EditorGapChecklistItem[];
+    internal_link_recommendations?: InternalLinkRecommendation[];
+    aio_serp?: AioSerpAudit;
+    aio_present_on_serp?: boolean;
+    aio_present_on_serp_queries?: string[];
+    aio_citation_seen?: boolean;
+    aio_citation_seen_queries?: string[];
+    ai_platform_citation_seen?: null;
+    citation_source?: "google_serp_aio_sources" | null;
     noncanonical_aio_loss_anchor_count?: number;
     canonical_mention_violation_count?: number;
     canonical_mention_violations?: CanonicalMentionViolation[];
@@ -774,6 +1358,7 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   const memberLines = input.members.map((m) => {
     const flags: string[] = [formatStats(m)];
     if (anchorSet.has(m.query)) flags.unshift("ANCHOR");
+    if (m.dataforseo_intents) flags.push(`intent ${m.dataforseo_intents}`);
     flags.push(formatTopicScore(m.topic_coverage_score));
     const ctrFlag = formatPerQueryCtr(m);
     if (ctrFlag) flags.push(ctrFlag);
@@ -819,7 +1404,7 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   }
   if (input.retailer) userParts.push(`Retailer context: ${input.retailer}`);
   if (input.productFamily) userParts.push(`Product family: ${input.productFamily}`);
-  if (input.ahrefsIntentPrior) userParts.push(`Ahrefs intent prior: ${input.ahrefsIntentPrior}`);
+  if (input.dataForSeoIntentPrior) userParts.push(`DataForSEO intent prior: ${input.dataForSeoIntentPrior}`);
 
   // AIO presence map keyed by query for cheap per-anchor lookup.
   const aioByQuery = new Map(
@@ -904,6 +1489,7 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   const externalCanonicalAnchorCount = canonicalOwnedAnchors.length;
   const everyAnchorIsExternalCanonical =
     input.anchors.length > 0 && externalCanonicalAnchorCount === input.anchors.length;
+  const navigationalSummary = summarizeNavigationalIntent(input);
 
   const hopelessLine = (() => {
     if (input.hopelessQueries.length === 0) return "none — no single subset of pos≥10 queries dominates the cluster";
@@ -925,6 +1511,7 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     `- avg rank: ${input.avgPosition != null ? `#${input.avgPosition.toFixed(1)}` : "—"}`,
     `- CTR: ${ctrLine}`,
     `- cannibalization: ${cannibalMemberCount > 0 ? `${cannibalMemberCount} member(s) ALSO rank on other pages — see member lines` : "none detected"}`,
+    `- navigational intent: ${navigationalSummary.gate ? `blocked (${Math.round(navigationalSummary.impression_share * 100)}% impression share)` : "not dominant"}`,
     `- AI Overview: ${aioAnchorCount > 0
         ? `present on ${aioAnchorCount} of ${input.anchorAioPresence.length} anchors (HT cited on ${aioCitedCount}); ${aioImpSharePct}% of cluster impressions on AIO-present anchors`
         : "absent from all anchors with SERP data"}`,
@@ -1005,6 +1592,17 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     startWith = [];
     confidence = Math.max(confidence, 0.85);
     recommendation = buildCanonicalCedeRecommendation(input);
+  }
+
+  if (navigationalSummary.gate) {
+    const sample =
+      navigationalSummary.anchor_queries[0]
+      ?? navigationalSummary.member_queries[0]
+      ?? input.canonicalQuery;
+    kind = "wrong_page";
+    startWith = [];
+    confidence = Math.max(confidence, 0.85);
+    recommendation = `Do not target this article for "${sample}": the cluster is dominated by navigational intent. Monitor the query or route any user-path fix outside the article update queue.`;
   }
 
   // (a) consolidate / cede require a real cannibalization signal. If the model
@@ -1136,6 +1734,9 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   if (nonCanonicalAioLossAnchors.length > 0) {
     guardrails.push(`${nonCanonicalAioLossAnchors.length} non-canonical AIO-loss anchor(s) available for source-friendly rewrites`);
   }
+  if (navigationalSummary.gate) {
+    guardrails.push("navigational intent blocked from author targets");
+  }
   if (unsafeCanonicalMentionCount > 0) {
     guardrails.push("canonical-owned anchor appeared in action prose; routed to review");
   }
@@ -1152,6 +1753,33 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     canonicalViolationCount: unsafeCanonicalMentionCount,
     allowModerateConfidenceReady,
   });
+  const standaloneArticle = scoreStandaloneArticleCandidate({
+    input,
+    kind,
+    navigationalGate: navigationalSummary.gate,
+    externalCanonicalAnchorCount,
+  });
+  const recommendationAudit = buildRecommendationTriggers({
+    input,
+    kind,
+    confidence,
+    navigationalGate: navigationalSummary.gate,
+    externalCanonicalAnchorCount,
+    nonCanonicalAioLossAnchors,
+    cannibalMemberCount,
+    standaloneArticle,
+  });
+  const editorGapChecklist = buildEditorGapChecklist({
+    input,
+    kind,
+    editorActionability,
+    triggers: recommendationAudit,
+    standaloneArticle,
+    recommendation,
+  });
+  const aioSerpAudit = buildAioSerpAudit(input);
+  const internalLinkRecommendations = (input.internalLinkRecommendations ?? [])
+    .slice(0, 6);
 
   return {
     kind,
@@ -1182,6 +1810,21 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
       external_canonical_anchor_count: externalCanonicalAnchorCount,
       canonical_owned_anchor_queries: canonicalOwnedAnchors.map((a) => a.query),
       actionable_anchor_queries: actionableAnchors.map((a) => a.query),
+      navigational_intent_gate: navigationalSummary.gate,
+      navigational_impression_share: navigationalSummary.impression_share,
+      supported_editorial_intent_share: navigationalSummary.supported_intent_share,
+      navigational_anchor_queries: navigationalSummary.anchor_queries,
+      standalone_article: standaloneArticle,
+      recommendation_audit: recommendationAudit,
+      editor_gap_checklist: editorGapChecklist,
+      internal_link_recommendations: internalLinkRecommendations,
+      aio_serp: aioSerpAudit,
+      aio_present_on_serp: aioSerpAudit.aio_present_on_serp,
+      aio_present_on_serp_queries: aioSerpAudit.aio_present_on_serp_queries,
+      aio_citation_seen: aioSerpAudit.aio_citation_seen,
+      aio_citation_seen_queries: aioSerpAudit.aio_citation_seen_queries,
+      ai_platform_citation_seen: aioSerpAudit.ai_platform_citation_seen,
+      citation_source: aioSerpAudit.citation_source,
       noncanonical_aio_loss_anchor_count: nonCanonicalAioLossAnchors.length,
       canonical_mention_violation_count: unsafeCanonicalMentionCount,
       canonical_mention_violations: unsafeCanonicalMentionViolations,
@@ -1242,9 +1885,41 @@ export async function classifyClustersConcurrently(
         const canonicalOwned = input.anchors.filter((a) => a.external_canonical);
         const actionable = input.anchors.filter((a) => !a.external_canonical);
         const canonicalSet = new Set(canonicalOwned.map((a) => a.query));
-        const nonCanonicalAioLossCount = input.anchorAioPresence.filter(
-          (a) => a.aiOverview && !a.cited && !canonicalSet.has(a.query),
+        const nonCanonicalAioLossAnchors = input.anchorAioPresence
+          .filter((a) => a.aiOverview && !a.cited && !canonicalSet.has(a.query))
+          .map((a) => a.query);
+        const nonCanonicalAioLossCount = nonCanonicalAioLossAnchors.length;
+        const cannibalMemberCount = input.members.filter(
+          (m) => (m.competing_pages?.length ?? 0) > 0,
         ).length;
+        const navigationalSummary = summarizeNavigationalIntent(input);
+        const standaloneArticle = scoreStandaloneArticleCandidate({
+          input,
+          kind: "needs_review",
+          navigationalGate: navigationalSummary.gate,
+          externalCanonicalAnchorCount: canonicalOwned.length,
+        });
+        const recommendationAudit = buildRecommendationTriggers({
+          input,
+          kind: "needs_review",
+          confidence: 0,
+          navigationalGate: navigationalSummary.gate,
+          externalCanonicalAnchorCount: canonicalOwned.length,
+          nonCanonicalAioLossAnchors,
+          cannibalMemberCount,
+          standaloneArticle,
+        });
+        const editorGapChecklist = buildEditorGapChecklist({
+          input,
+          kind: "needs_review",
+          editorActionability: "review",
+          triggers: recommendationAudit,
+          standaloneArticle,
+          recommendation: message,
+        });
+        const aioSerpAudit = buildAioSerpAudit(input);
+        const internalLinkRecommendations = (input.internalLinkRecommendations ?? [])
+          .slice(0, 6);
         const fallback: CoverageResult = {
           kind: "needs_review",
           recommendation: `Classification failed: ${message.slice(0, 200)}`,
@@ -1265,9 +1940,7 @@ export async function classifyClustersConcurrently(
             weighted_ctr_pct: input.weightedCtrPct,
             expected_ctr_pct: input.expectedCtrPct,
             anchor_queries: input.anchors.map((a) => a.query),
-            cannibal_member_count: input.members.filter(
-              (m) => (m.competing_pages?.length ?? 0) > 0,
-            ).length,
+            cannibal_member_count: cannibalMemberCount,
             ...summarizeTopicScores(input.members),
             aio_anchor_count: input.anchorAioPresence.filter((a) => a.aiOverview).length,
             aio_cited_count: input.anchorAioPresence.filter((a) => a.aiOverview && a.cited).length,
@@ -1276,6 +1949,21 @@ export async function classifyClustersConcurrently(
             external_canonical_anchor_count: canonicalOwned.length,
             canonical_owned_anchor_queries: canonicalOwned.map((a) => a.query),
             actionable_anchor_queries: actionable.map((a) => a.query),
+            navigational_intent_gate: navigationalSummary.gate,
+            navigational_impression_share: navigationalSummary.impression_share,
+            supported_editorial_intent_share: navigationalSummary.supported_intent_share,
+            navigational_anchor_queries: navigationalSummary.anchor_queries,
+            standalone_article: standaloneArticle,
+            recommendation_audit: recommendationAudit,
+            editor_gap_checklist: editorGapChecklist,
+            internal_link_recommendations: internalLinkRecommendations,
+            aio_serp: aioSerpAudit,
+            aio_present_on_serp: aioSerpAudit.aio_present_on_serp,
+            aio_present_on_serp_queries: aioSerpAudit.aio_present_on_serp_queries,
+            aio_citation_seen: aioSerpAudit.aio_citation_seen,
+            aio_citation_seen_queries: aioSerpAudit.aio_citation_seen_queries,
+            ai_platform_citation_seen: aioSerpAudit.ai_platform_citation_seen,
+            citation_source: aioSerpAudit.citation_source,
             noncanonical_aio_loss_anchor_count: nonCanonicalAioLossCount,
             canonical_mention_violation_count: 0,
             canonical_mention_violations: [],
