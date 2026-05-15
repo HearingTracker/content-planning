@@ -17,6 +17,7 @@
 
 import { createHash } from "node:crypto";
 import { type SupabaseClient } from "@supabase/supabase-js";
+import { detectBrand } from "./brand-map";
 import { embedQueries } from "./embed";
 import { normalizeUrlForMatch } from "./serp-data";
 
@@ -181,6 +182,114 @@ type PageRow = {
   content_modified_at: string | null;
   outbound_internal_links: string[] | null;
 };
+
+type SynthesisPageContentType =
+  | "best_list"
+  | "brand_page"
+  | "product_review"
+  | "comparison_page"
+  | "price_or_buying_guide"
+  | "general_guide"
+  | "generic_article"
+  | "unknown";
+
+function inferSynthesisPageContentType(page: string, title: string | null): SynthesisPageContentType {
+  const text = `${page} ${title ?? ""}`.toLowerCase();
+  if (
+    page === "/best-hearing-aids"
+    || /(^|\/)best[-/]/i.test(page)
+    || /\b(best|top)\s+\w*(?:\s+\w+){0,4}\s+hearing aids?\b/i.test(title ?? "")
+  ) {
+    return "best_list";
+  }
+  if (/\b(vs|versus|compare|comparison|compared)\b/i.test(title ?? "") || page.includes("/compare") || /-vs-|\/vs\//i.test(page)) {
+    return "comparison_page";
+  }
+  if (/\breviews?\b/i.test(title ?? "") || /\/reviews?\//i.test(page)) {
+    return "product_review";
+  }
+  if (/^\/hearing-aids\/[^/]+$/.test(page)) {
+    return "brand_page";
+  }
+  if (/\b(price|prices|pricing|cost|costs|affordable|cheap|finance|financing|insurance|medicare)\b/i.test(text)) {
+    return "price_or_buying_guide";
+  }
+  if (text.includes("hearing-aids") || /\bhearing aids?\b/i.test(text)) {
+    return "general_guide";
+  }
+  return title ? "generic_article" : "unknown";
+}
+
+function hasListOrReviewModifier(query: string): boolean {
+  return /\b(best|top|review|reviews|compare|comparison|vs|versus)\b/i.test(query);
+}
+
+function isPriceIntentQuery(query: string): boolean {
+  return /\b(price|prices|pricing|cost|costs|affordable|cheap|finance|financing|insurance|medicare)\b/i.test(query);
+}
+
+function scoreQueryPageFit(query: string, page: PageRow | undefined): {
+  score: number;
+  content_type: SynthesisPageContentType;
+  reasons: string[];
+} {
+  if (!page) {
+    return { score: 0.4, content_type: "unknown", reasons: ["page metadata missing"] };
+  }
+
+  const contentType = inferSynthesisPageContentType(page.page, page.page_title);
+  const haystack = `${page.page} ${page.page_title ?? ""}`.toLowerCase();
+  const brand = detectBrand(query);
+  const hasBrand = Boolean(brand.brand || brand.product_family || brand.retailer);
+  const hasModifier = hasListOrReviewModifier(query);
+  const priceIntent = isPriceIntentQuery(query);
+  const reasons: string[] = [`content_type:${contentType}`];
+  let score = 0.5;
+
+  if (hasBrand) {
+    const ownerToken = brand.brand ?? brand.product_family ?? brand.retailer ?? "";
+    const ownerNeedles = [ownerToken, ownerToken.replace(/-/g, " ")].filter(Boolean);
+    if (ownerNeedles.some((needle) => haystack.includes(needle))) {
+      score += 0.35;
+      reasons.push("brand/page token match");
+    } else if (contentType === "brand_page" || contentType === "product_review") {
+      score += 0.15;
+      reasons.push("brand/product page type");
+    } else if (contentType === "best_list" && !hasModifier) {
+      score -= 0.45;
+      reasons.push("exact brand query on best list");
+    } else {
+      score -= 0.15;
+      reasons.push("brand query without brand-owner page fit");
+    }
+  }
+
+  if (priceIntent) {
+    if (contentType === "price_or_buying_guide") {
+      score += 0.35;
+      reasons.push("price intent matches price guide");
+    } else if (contentType === "best_list" && !hasModifier) {
+      score -= 0.35;
+      reasons.push("broad price intent on best list");
+    } else {
+      score -= 0.1;
+      reasons.push("price intent without price-guide fit");
+    }
+  }
+
+  if (hasModifier) {
+    if (contentType === "best_list" || contentType === "comparison_page" || contentType === "product_review") {
+      score += 0.25;
+      reasons.push("list/review modifier fits page type");
+    }
+  }
+
+  return {
+    score: Math.max(0, Math.min(1, Number(score.toFixed(3)))),
+    content_type: contentType,
+    reasons,
+  };
+}
 
 type RankHistoryRow = {
   page: string;
@@ -681,10 +790,23 @@ export function detectAioNoCitation(
     const sv = Math.max(...htRankings.map((r) => r.volume ?? 0));
     if (sv < thresholds.aio_minSv) continue;
 
-    // Pick best-positioned HT page as the target for the rewrite.
-    const best = htRankings
+    // Pick the best page-type fit first, then current rank. This avoids
+    // sending exact brand/product or price AIO gaps to a broad best list just
+    // because it happens to rank above the canonical page.
+    const rankedTargets = htRankings
       .filter((r) => r.position != null)
-      .sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity))[0];
+      .map((r) => ({
+        row: r,
+        fit: scoreQueryPageFit(query, state.pagesById.get(r.page)),
+      }))
+      .sort((a, b) => {
+        if (b.fit.score !== a.fit.score) return b.fit.score - a.fit.score;
+        return (a.row.position ?? Infinity) - (b.row.position ?? Infinity);
+      });
+    const best = rankedTargets[0]?.row ?? null;
+    const bestFit = rankedTargets[0]?.fit ?? null;
+
+    if (bestFit && bestFit.score < 0.35) continue;
 
     // Suppress when the target page's cluster already owns this query under
     // the per-cluster ai_overview_loss verdict.
@@ -701,7 +823,9 @@ export function detectAioNoCitation(
         ht_rankings: htRankings.map((r) => ({
           page: r.page,
           position: r.position,
+          target_fit: scoreQueryPageFit(query, state.pagesById.get(r.page)),
         })),
+        selected_target_fit: bestFit,
         aio_source_count: serp.ai_overview_sources.length,
         aio_source_sample: serp.ai_overview_sources.slice(0, 5),
         serp_fetched_at: serp.fetched_at,

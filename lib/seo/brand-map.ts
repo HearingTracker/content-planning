@@ -51,6 +51,7 @@ const BRAND_RULES: BrandRule[] = [
   { pattern: wb("sennheiser"),     brand: "sennheiser" },
   { pattern: wb("mdhearing"),      brand: "mdhearing" },
   { pattern: wb("md hearing"),     brand: "mdhearing" },
+  { pattern: wb("audien"),         brand: "audien" },
   { pattern: wb("lucid"),          brand: "lucid" },
   { pattern: wb("nuheara"),        brand: "nuheara" },
   // Apple is tricky; only match when AirPods context is present, since "apple"

@@ -1,5 +1,15 @@
 export type SeoOppStatus = "open" | "in_progress" | "done" | "dismissed";
 
+export type SeoPageContentType =
+  | "best_list"
+  | "brand_page"
+  | "product_review"
+  | "comparison_page"
+  | "price_or_buying_guide"
+  | "general_guide"
+  | "generic_article"
+  | "unknown";
+
 export type SeoManualQueueTaskType =
   | "article_update"
   | "update_event"
@@ -213,6 +223,8 @@ export type SeoOpportunity = {
   retailer: string | null;
   product_family: string | null;
   dataforseo_intent_prior: string | null;
+  page_content_type: SeoPageContentType | null;
+  page_content_type_signals: string[];
   member_count: number;
   total_impressions: number;
   total_volume: number;

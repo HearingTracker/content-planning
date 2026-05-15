@@ -27,6 +27,16 @@ export function stripHtml(s: string | null | undefined): string {
 
 export type Heading = { level: number; text: string };
 
+export type PageContentType =
+  | "best_list"
+  | "brand_page"
+  | "product_review"
+  | "comparison_page"
+  | "price_or_buying_guide"
+  | "general_guide"
+  | "generic_article"
+  | "unknown";
+
 export type PageMeta = {
   url: string;
   source: "storyblok" | "rendered";
@@ -35,6 +45,14 @@ export type PageMeta = {
   description: string;
   headings: Heading[];
   bodyText: string;
+  /**
+   * Coarse editorial page type inferred from URL/title/Storyblok components.
+   * Used by the SEO classifier to avoid asking a best list to own brand-page
+   * intent, or a brand page to own broad price-guide intent.
+   */
+  contentType: PageContentType;
+  /** Short evidence labels explaining the inferred contentType. */
+  contentTypeSignals: string[];
   titleTokens: Set<string>;
   bodyTokens: Set<string>;
   /**

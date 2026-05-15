@@ -149,6 +149,19 @@ function asStringArray(value: unknown): string[] {
     : [];
 }
 
+function asSeoPageContentType(value: unknown): SeoOpportunity["page_content_type"] {
+  return value === "best_list" ||
+    value === "brand_page" ||
+    value === "product_review" ||
+    value === "comparison_page" ||
+    value === "price_or_buying_guide" ||
+    value === "general_guide" ||
+    value === "generic_article" ||
+    value === "unknown"
+      ? value
+      : null;
+}
+
 function parseStandaloneArticleAudit(
   value: unknown,
 ): SeoOpportunity["standalone_article"] {
@@ -438,6 +451,8 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
       retailer: row.cluster.retailer,
       product_family: row.cluster.product_family,
       dataforseo_intent_prior: row.cluster.dataforseo_intent_prior,
+      page_content_type: asSeoPageContentType(digest?.page_content_type),
+      page_content_type_signals: asStringArray(digest?.page_content_type_signals),
       member_count: row.cluster.member_count,
       total_impressions: row.cluster.total_impressions,
       total_volume: row.cluster.total_volume,

@@ -2,7 +2,13 @@
 // Storyblok where possible, falling back to scraping the live HTML when a slug
 // has no Storyblok story (e.g. programmatic compare pages).
 
-import { tokenize, stripHtml, type PageMeta, type Heading } from "./classify";
+import {
+  tokenize,
+  stripHtml,
+  type PageContentType,
+  type PageMeta,
+  type Heading,
+} from "./classify";
 
 // Fields whose values are *headings* in any reasonable sense — promoted into
 // `headings[]` so the section-embedding pass can score query↔heading cosine
@@ -25,7 +31,7 @@ const TEXT_FIELDS = new Set([
 // field (long marketing copy that uses "title" loosely, URL slugs, etc.).
 const MAX_HEADING_LEN = 200;
 
-type WalkOut = { headings: Heading[]; body: string[] };
+type WalkOut = { headings: Heading[]; body: string[]; components: Set<string> };
 
 // Concatenate all text descendants of a node into a single string. Used for
 // table cells and similar leaf content where structure inside doesn't matter.
@@ -98,6 +104,7 @@ function walkStoryblok(node: unknown, out: WalkOut): void {
   // knows there's a non-text block here, then keep walking to capture text
   // fields inside (specs, captions, etc.).
   if (typeof obj.component === "string" && obj.component.length > 0) {
+    out.components.add(obj.component);
     out.body.push(`[block: ${obj.component}]`);
 
     // Listicle pages auto-render a price/spec comparison table at the top from
@@ -144,6 +151,7 @@ async function fetchStoryblokStory(urlPath: string, sbToken: string): Promise<{
   metaDesc: string;
   headings: Heading[];
   body: string[];
+  components: string[];
   /** ISO timestamp of the page's last meaningful update, or null. */
   contentModifiedAt: string | null;
 } | null> {
@@ -155,7 +163,7 @@ async function fetchStoryblokStory(urlPath: string, sbToken: string): Promise<{
     const data = (await res.json()) as { story?: StoryblokStory };
     const story = data.story;
     if (!story) return null;
-    const out: WalkOut = { headings: [], body: [] };
+    const out: WalkOut = { headings: [], body: [], components: new Set<string>() };
     walkStoryblok(story.content, out);
 
     const findField = (component: string, field: string): string => {
@@ -181,12 +189,101 @@ async function fetchStoryblokStory(urlPath: string, sbToken: string): Promise<{
       metaDesc: findField("n4-meta-information", "meta_description"),
       headings: out.headings,
       body: out.body,
+      components: [...out.components].sort(),
       contentModifiedAt,
     };
   } catch (err) {
     console.warn(`[seo] storyblok fetch failed for ${slug}:`, (err as Error).message);
     return null;
   }
+}
+
+function inferPageContentType(args: {
+  urlPath: string;
+  title: string;
+  h1: string;
+  description: string;
+  headings: Heading[];
+  bodyText: string;
+  componentNames: string[];
+}): { contentType: PageContentType; signals: string[] } {
+  const { urlPath, title, h1, description, headings, bodyText, componentNames } = args;
+  const text = [
+    urlPath,
+    title,
+    h1,
+    description,
+    ...headings.slice(0, 12).map((h) => h.text),
+    bodyText.slice(0, 3000),
+  ].join(" ").toLowerCase();
+  const surfaceText = [
+    urlPath,
+    title,
+    h1,
+    description,
+    ...headings.slice(0, 12).map((h) => h.text),
+  ].join(" ").toLowerCase();
+  const components = new Set(componentNames);
+  const signals: string[] = [];
+  const add = (signal: string) => {
+    if (!signals.includes(signal)) signals.push(signal);
+  };
+
+  if (
+    urlPath === "/best-hearing-aids"
+    || /(^|\/)best[-/]/i.test(urlPath)
+    || /\b(best|top)\s+\w*(?:\s+\w+){0,4}\s+hearing aids?\b/i.test(title)
+    || text.includes("[auto-rendered:")
+  ) {
+    add("best/listicle URL, title, or listicle table");
+    return { contentType: "best_list", signals };
+  }
+
+  if (
+    /\b(vs|versus|compare|comparison|compared)\b/i.test(title)
+    || urlPath.includes("/compare")
+    || /-vs-|\/vs\//i.test(urlPath)
+  ) {
+    add("comparison URL or title");
+    return { contentType: "comparison_page", signals };
+  }
+
+  if (
+    /\breviews?\b/i.test(title)
+    || /\breviews?\b/i.test(h1)
+    || /\/reviews?\//i.test(urlPath)
+    || components.has("product-review")
+    || components.has("n4-product-review")
+  ) {
+    add("review URL, title, or component");
+    return { contentType: "product_review", signals };
+  }
+
+  if (/^\/hearing-aids\/[^/]+$/.test(urlPath)) {
+    add("single hearing-aids subpath");
+    return { contentType: "brand_page", signals };
+  }
+
+  if (
+    /\b(price|prices|pricing|cost|costs|affordable|cheap|finance|financing|insurance|medicare)\b/i.test(surfaceText)
+    || /(?:price|pricing|cost|affordable|finance|insurance|medicare)/i.test(urlPath)
+  ) {
+    add("price, cost, insurance, or buying-guide surface language");
+    return { contentType: "price_or_buying_guide", signals };
+  }
+
+  if (/\bhearing aids?\b/i.test(text) || urlPath.includes("hearing-aids")) {
+    add("hearing-aids guide context");
+    return { contentType: "general_guide", signals };
+  }
+
+  if (title || h1 || bodyText) {
+    add("article metadata present");
+    return { contentType: "generic_article", signals };
+  }
+
+  add("no reliable content-type signal");
+  return { contentType: "unknown", signals };
 }
 
 /**
@@ -307,6 +404,7 @@ export async function fetchPageMeta(siteOrigin: string, urlPath: string, sbToken
   let bodyText = "";
   let source: "storyblok" | "rendered" = "rendered";
   let contentModifiedAt: string | null = null;
+  let componentNames: string[] = [];
 
   if (sb) {
     source = "storyblok";
@@ -316,6 +414,7 @@ export async function fetchPageMeta(siteOrigin: string, urlPath: string, sbToken
     h1 = headings.find((h) => h.level === 1)?.text || sb.name;
     bodyText = sb.body.join("\n\n");
     contentModifiedAt = sb.contentModifiedAt;
+    componentNames = sb.components;
   } else {
     title = rendered.title;
     h1 = rendered.h1;
@@ -323,6 +422,16 @@ export async function fetchPageMeta(siteOrigin: string, urlPath: string, sbToken
     headings = rendered.h2s.map((t) => ({ level: 2, text: t }));
     bodyText = rendered.body;
   }
+
+  const contentType = inferPageContentType({
+    urlPath,
+    title,
+    h1,
+    description,
+    headings,
+    bodyText,
+    componentNames,
+  });
 
   const titleTokens = new Set([
     ...tokenize(title),
@@ -342,6 +451,8 @@ export async function fetchPageMeta(siteOrigin: string, urlPath: string, sbToken
     title, h1, description,
     headings,
     bodyText,
+    contentType: contentType.contentType,
+    contentTypeSignals: contentType.signals,
     titleTokens,
     bodyTokens,
     contentModifiedAt,

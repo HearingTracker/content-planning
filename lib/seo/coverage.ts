@@ -23,7 +23,8 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { Heading } from "./classify";
+import { detectBrand } from "./brand-map";
+import type { Heading, PageContentType } from "./classify";
 
 // Kinds the LLM is allowed to emit. needs_review is the system-emitted
 // fallback (e.g. when classification times out / fails) and is intentionally
@@ -149,8 +150,12 @@ const CoverageSchema = z.object({
 //     criteria, recommendation triggers, human gap checklist, explicit
 //     AIO-as-SERP-feature naming, internal-link recommendations, and
 //     prioritization hooks.
+// v17: pass inferred page/content type into the prompt and audit, filter
+//     under-qualified anchors such as "best overall", and treat canonical
+//     overlap on broad/list pages as satisfied when the page already links
+//     to the canonical owner.
 export const COVERAGE_PROMPT_VERSION =
-  process.env.SEO_COVERAGE_PROMPT_VERSION ?? "v16";
+  process.env.SEO_COVERAGE_PROMPT_VERSION ?? "v17";
 
 function resolveModelId(): string {
   const raw = process.env.SEO_COVERAGE_MODEL ?? process.env.SEO_LABEL_MODEL;
@@ -175,6 +180,7 @@ const SYSTEM_PROMPT = `You are an SEO content strategist deciding what an editor
 
 You will be given:
 - The page's URL, title, meta description, and heading outline.
+- The page's inferred content type: best list/listicle, brand page, product review, comparison page, price/buying guide, general guide, generic article, or unknown. Use it as a routing constraint, not as a guess.
 - The page's body text (may be truncated).
 - A cluster of related Google Search Console queries the page ranks for in striking distance (positions 4–15), with TWO body-coverage signals per query: (a) "phrase×N in body" — exact-string occurrences of the literal query in the body text; (b) "topic NN%" — semantic max-cosine between the query embedding and the page's section embeddings (title, H1, every heading, body chunks). A topic score ≥55% means the page already has a section addressing that topic even if the literal phrase isn't there.
 - Aggregate ranking and CTR metrics for the cluster.
@@ -187,7 +193,10 @@ You will be given:
 Your job: pick exactly one of these eight editorial states, and write 1–3 short sentences telling the editor what to do. Optimize for meaningful HearingTracker article edits, not generic SEO activity.
 
 Editorial quality bar:
+- Page-type fit matters. A best list/listicle is allowed to mention product names, brands, and associated terms for products it evaluates; that overlap is not a cannibalization problem by itself. A brand page should own exact brand navigational/commercial queries. A product review should own exact product/model queries. A price/buying guide should own broad price/cost/insurance queries. If a query belongs to another page type, route it there instead of forcing the current page to target it.
+- If the current page already links to the canonical owner for a product/brand/price topic, treat that as a valid internal-routing pattern unless the page is actively trying to rank for that canonical-owned term. Do not recommend "cede" merely because a broad best list mentions or links to products it must discuss.
 - A useful edit adds decision-making value for hearing aid shoppers: audiologist/expert review, first-hand product testing, HearAdvisor/lab data, current price ranges, model/version differences, OTC vs prescription distinctions, fit/use-case guidance, return/warranty details, pros/cons, or a clear comparison table.
+- Do not invent product or model names. Only name a product/model if it appears in the page text, URL, query list, canonical URL, or provided metadata. If the exact model is not present, refer to the brand or query instead and set lower confidence.
 - Do NOT recommend adding generic explanatory copy when the topic is already semantically present. If the page covers the topic, the edit should improve evidence, freshness, structure, or search-result clarity.
 - Do NOT treat AI Overview visibility as a separate hack. Use AIO only as a SERP diagnosis. The edit still has to make the page more useful and source-friendly for readers: direct answer, attributable facts, visible text, and structured evidence.
 - Prefer fewer, higher-confidence tasks. If the evidence is ambiguous, set confidence <0.6; the system will route it to review rather than assigning it as an author task.
@@ -205,6 +214,9 @@ States (mutually exclusive — pick the BEST fit):
 Decision guidance:
 - Prefer coverage_partial over intent_gap when at least one heading or body passage already addresses a sibling angle of the cluster.
 - Do NOT recommend article updates for navigational-dominant clusters. If the query intent is primarily to reach a login, brand site, store page, account page, support portal, or other destination, the correct outcome is to block article work and route the issue outside the content update queue.
+- Do not target under-qualified modifier phrases such as "best overall" as standalone SEO work. They can describe a listicle slot, but they are not a search intent unless attached to a concrete topic like "hearing aids."
+- On best lists, exact brand/product anchors without "best", "review", "compare", "vs", or a similar list/review modifier usually belong to the brand/product page. If the best list already links there, the correct outcome is monitor/valid overlap, not cede noise.
+- On best lists, broad "hearing aids prices/cost" anchors usually belong to the dedicated cost/price guide unless the recommendation is about improving an existing comparison table's price fields, not adding a generic pricing section.
 - Prefer wrong_page over cede when there is NO cannibalization signal — wrong_page means "not the right topic for this page," cede means "right topic, wrong page."
 - Pick consolidate or cede ONLY when at least one anchor or member query has competing pages listed.
 - Before recommending consolidate, you MUST acknowledge in the recommendation what each de-target sibling currently wins (cite a winning query by name). If ANY listed competitor wins an anchor-tier query (pos ≤10 AND KD ≤20), prefer coverage_strong or snippet_ctr instead — that sibling is doing its job and de-targeting it would forfeit real traffic.
@@ -247,6 +259,37 @@ export type AnchorCandidate = {
   kd: number | null;
 };
 
+const UNDERQUALIFIED_ANCHOR_TOKENS = new Set([
+  "best",
+  "top",
+  "overall",
+  "rated",
+  "rating",
+  "ratings",
+  "review",
+  "reviews",
+  "recommended",
+  "recommendation",
+  "winner",
+  "value",
+  "choice",
+  "pick",
+]);
+
+function simpleQueryTokens(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0);
+}
+
+export function isUnderqualifiedAnchorQuery(query: string): boolean {
+  const tokens = simpleQueryTokens(query);
+  if (tokens.length === 0 || tokens.length > 4) return false;
+  const meaningfulTokens = tokens.filter((t) => !UNDERQUALIFIED_ANCHOR_TOKENS.has(t));
+  return meaningfulTokens.length === 0;
+}
+
 /**
  * Rank candidates by volume / max(kd, 1) × striking_distance_factor and
  * return the top N. KD nulls fall back to 50 (neutral mid-difficulty); volume
@@ -257,12 +300,14 @@ export function rankAnchorQueries(
   candidates: AnchorCandidate[],
   topN = 5,
 ): { query: string; score: number }[] {
-  const scored = candidates.map((c) => {
-    const vol = c.volume ?? 0;
-    const kd = Math.max(c.kd ?? 50, 1);
-    const sd = strikingDistanceFactor(c.position);
-    return { query: c.query, score: (vol / kd) * sd };
-  });
+  const scored = candidates
+    .filter((c) => !isUnderqualifiedAnchorQuery(c.query))
+    .map((c) => {
+      const vol = c.volume ?? 0;
+      const kd = Math.max(c.kd ?? 50, 1);
+      const sd = strikingDistanceFactor(c.position);
+      return { query: c.query, score: (vol / kd) * sd };
+    });
   scored.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     return a.query.length - b.query.length;
@@ -409,6 +454,61 @@ function pathFromCanonicalUrl(url: string): string {
   }
 }
 
+function normalizeInternalPath(value: string): string | null {
+  const path = pathFromCanonicalUrl(value).split("#")[0].split("?")[0].replace(/\/+$/, "") || "/";
+  return path.startsWith("/") ? path : null;
+}
+
+function pageTypeLabel(type: PageContentType | undefined): string {
+  switch (type) {
+    case "best_list": return "best list";
+    case "brand_page": return "brand page";
+    case "product_review": return "product review";
+    case "comparison_page": return "comparison page";
+    case "price_or_buying_guide": return "price/buying guide";
+    case "general_guide": return "general guide";
+    case "generic_article": return "article";
+    default: return "page";
+  }
+}
+
+function allowsSatisfiedCanonicalOverlap(type: PageContentType | undefined): boolean {
+  return type === "best_list"
+    || type === "comparison_page"
+    || type === "general_guide"
+    || type === "price_or_buying_guide"
+    || type === "generic_article";
+}
+
+function linkedCanonicalTargets(
+  anchors: CoverageAnchor[],
+  outboundInternalLinks: string[] | null | undefined,
+): string[] {
+  const outbound = new Set(
+    (outboundInternalLinks ?? [])
+      .map(normalizeInternalPath)
+      .filter((p): p is string => p !== null),
+  );
+  const linked = new Set<string>();
+  for (const anchor of anchors) {
+    const target = anchor.external_canonical?.url;
+    if (!target) continue;
+    const path = normalizeInternalPath(target);
+    if (path && outbound.has(path)) linked.add(path);
+  }
+  return [...linked].sort();
+}
+
+function buildSatisfiedCanonicalOverlapRecommendation(
+  input: CoverageInput,
+  linkedTargets: string[],
+): string {
+  const targetText = linkedTargets.length > 0
+    ? linkedTargets.slice(0, 4).join(", ")
+    : "the canonical owner";
+  return `Valid overlap for this ${pageTypeLabel(input.pageContentType)}: ${input.page} already links to ${targetText}. Keep the mentions contextual and do not expand this page to target those canonical-owned terms.`;
+}
+
 function splitRecommendationSentences(text: string): string[] {
   const matches = text.match(/[^.!?]+[.!?]?/g);
   return matches?.map((s) => s.trim()).filter(Boolean) ?? [text.trim()].filter(Boolean);
@@ -419,6 +519,85 @@ type CanonicalMentionViolation = {
   url: string;
   context: string;
 };
+
+type UnsupportedProductMention = {
+  mention: string;
+  context: string;
+};
+
+const PRODUCT_MENTION_BRANDS = [
+  "Phonak",
+  "Oticon",
+  "ReSound",
+  "Widex",
+  "Signia",
+  "Starkey",
+  "Unitron",
+  "Rexton",
+  "Philips",
+  "Jabra",
+  "Beltone",
+  "Miracle-Ear",
+  "Audibel",
+  "Audicus",
+  "Eargo",
+  "Lexie",
+  "Sony",
+  "Bose",
+  "Sennheiser",
+  "MDHearing",
+  "Audien",
+  "Lucid",
+  "Nuheara",
+];
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+}
+
+function productEvidenceText(input: CoverageInput): string {
+  return [
+    input.page,
+    input.pageTitle,
+    input.metaDescription,
+    input.bodyText,
+    input.brand,
+    input.retailer,
+    input.productFamily,
+    ...input.headings.map((h) => h.text),
+    ...input.members.map((m) => m.query),
+    ...input.anchors.map((a) => a.query),
+    ...input.anchors.map((a) => a.external_canonical?.url ?? ""),
+  ].filter(Boolean).join("\n").toLowerCase();
+}
+
+function findUnsupportedProductMentions(
+  recommendation: string,
+  input: CoverageInput,
+): UnsupportedProductMention[] {
+  const evidence = productEvidenceText(input);
+  const brandPattern = PRODUCT_MENTION_BRANDS.map(escapeRegExp).join("|");
+  const productish =
+    String.raw`\b(?:${brandPattern})\s+(?:[A-Z][A-Za-z0-9+.-]*|[A-Z0-9]+-[A-Z0-9-]+)(?:\s+(?:[A-Z][A-Za-z0-9+.-]*|[A-Z0-9]+-[A-Z0-9-]+)){0,3}`;
+  const regex = new RegExp(productish, "g");
+  const violations: UnsupportedProductMention[] = [];
+  const sentences = splitRecommendationSentences(recommendation);
+  const seen = new Set<string>();
+
+  for (const sentence of sentences) {
+    for (const match of sentence.matchAll(regex)) {
+      const mention = match[0].trim();
+      const normalized = mention.toLowerCase();
+      if (seen.has(normalized) || evidence.includes(normalized)) continue;
+      seen.add(normalized);
+      violations.push({
+        mention,
+        context: sentence.slice(0, 260),
+      });
+    }
+  }
+  return violations;
+}
 
 function findUnsafeCanonicalMentions(
   recommendation: string,
@@ -486,6 +665,15 @@ function buildLowConfidenceRecommendation(recommendation: string): string {
 function buildReviewRecommendation(reason: string, recommendation: string): string {
   const cleaned = recommendation.replace(/^Review before assigning:\s*/i, "").trim();
   return `Review before assigning: ${reason}. ${cleaned}`;
+}
+
+function buildUnsupportedProductReviewRecommendation(
+  violations: UnsupportedProductMention[],
+  recommendation: string,
+): string {
+  const mentions = violations.slice(0, 3).map((v) => `"${v.mention}"`).join(", ");
+  const cleaned = recommendation.replace(/^Review before assigning:\s*/i, "").trim();
+  return `Review before assigning: the draft named unsupported product/model ${mentions}. Verify product names against the source page or product catalog before assigning. ${cleaned}`;
 }
 
 function hasConcreteEditorialEvidence(recommendation: string): boolean {
@@ -708,6 +896,64 @@ function summarizeNavigationalIntent(input: CoverageInput): {
     supported_intent_share: Math.round(supportedIntentShare * 1000) / 1000,
     anchor_queries: navigationalAnchors,
     member_queries: navigationalMembers,
+  };
+}
+
+function hasListOrReviewModifier(query: string): boolean {
+  return /\b(best|top|review|reviews|compare|comparison|vs|versus)\b/i.test(query);
+}
+
+function isPriceIntentQuery(query: string): boolean {
+  return /\b(price|prices|pricing|cost|costs|affordable|cheap|finance|financing|insurance|medicare)\b/i.test(query);
+}
+
+function bestListOffTypeSummary(input: CoverageInput): {
+  gate: boolean;
+  sample: string | null;
+  reason: "exact_brand_or_product" | "broad_price_or_cost" | null;
+  impression_share: number;
+} {
+  if (input.pageContentType !== "best_list") {
+    return { gate: false, sample: null, reason: null, impression_share: 0 };
+  }
+
+  const offTypeQueries = new Set<string>();
+  let reason: "exact_brand_or_product" | "broad_price_or_cost" | null = null;
+  for (const m of input.members) {
+    if (hasListOrReviewModifier(m.query)) continue;
+    const brand = detectBrand(m.query);
+    if (brand.is_branded || brand.retailer || brand.product_family) {
+      offTypeQueries.add(m.query);
+      reason ??= "exact_brand_or_product";
+      continue;
+    }
+    if (isPriceIntentQuery(m.query)) {
+      offTypeQueries.add(m.query);
+      reason ??= "broad_price_or_cost";
+    }
+  }
+
+  if (offTypeQueries.size === 0) {
+    return { gate: false, sample: null, reason: null, impression_share: 0 };
+  }
+
+  const totalImpressions = totalMemberImpressions(input);
+  const offTypeImpressions = input.members
+    .filter((m) => offTypeQueries.has(m.query))
+    .reduce((sum, m) => sum + (m.impressions ?? 0), 0);
+  const impressionShare = totalImpressions > 0
+    ? offTypeImpressions / totalImpressions
+    : offTypeQueries.size / input.members.length;
+  const anchorQueries = input.anchors.map((a) => a.query);
+  const offTypeAnchorCount = anchorQueries.filter((q) => offTypeQueries.has(q)).length;
+  const anchorDominant =
+    anchorQueries.length > 0 && offTypeAnchorCount / anchorQueries.length >= 0.6;
+
+  return {
+    gate: impressionShare >= 0.5 || anchorDominant,
+    sample: anchorQueries.find((q) => offTypeQueries.has(q)) ?? [...offTypeQueries][0] ?? null,
+    reason,
+    impression_share: Math.round(impressionShare * 1000) / 1000,
   };
 }
 
@@ -1169,6 +1415,9 @@ export type CoverageInput = {
   headings: Heading[];
   bodyText: string;
   pageContentModifiedAt?: string | null;
+  pageContentType?: PageContentType;
+  pageContentTypeSignals?: string[];
+  outboundInternalLinks?: string[];
 
   clusterLabel: string;
   canonicalQuery: string;
@@ -1244,6 +1493,8 @@ export type CoverageResult = {
   audit: {
     prompt_version: string;
     page: string;
+    page_content_type?: PageContentType;
+    page_content_type_signals?: string[];
     cluster_label: string;
     canonical_query: string;
     member_count: number;
@@ -1271,11 +1522,16 @@ export type CoverageResult = {
     external_canonical_anchor_count: number;
     canonical_owned_anchor_queries?: string[];
     actionable_anchor_queries?: string[];
+    canonical_targets_already_linked?: string[];
     /** Navigational-intent hard gate (v15+). */
       navigational_intent_gate?: boolean;
       navigational_impression_share?: number;
       supported_editorial_intent_share?: number;
       navigational_anchor_queries?: string[];
+    best_list_page_type_gate?: boolean;
+    best_list_page_type_gate_reason?: string | null;
+    best_list_page_type_gate_query?: string | null;
+    best_list_page_type_gate_impression_share?: number;
     standalone_article?: StandaloneArticleAudit;
     recommendation_audit?: RecommendationTriggerAudit;
     editor_gap_checklist?: EditorGapChecklistItem[];
@@ -1290,6 +1546,8 @@ export type CoverageResult = {
     noncanonical_aio_loss_anchor_count?: number;
     canonical_mention_violation_count?: number;
     canonical_mention_violations?: CanonicalMentionViolation[];
+    unsupported_product_mention_count?: number;
+    unsupported_product_mentions?: UnsupportedProductMention[];
     editor_actionability?: EditorActionability;
     guardrails?: string[];
     primary_model_id?: string;
@@ -1388,6 +1646,7 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     `Page URL: ${input.page}`,
     `Page title: ${input.pageTitle ?? "(empty)"}`,
     `Meta description: ${input.metaDescription ?? "(empty)"}`,
+    `Inferred content type: ${input.pageContentType ?? "unknown"}${input.pageContentTypeSignals?.length ? ` (${input.pageContentTypeSignals.join("; ")})` : ""}`,
     "",
     "Heading outline:",
     formatHeadings(input.headings),
@@ -1489,7 +1748,21 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   const externalCanonicalAnchorCount = canonicalOwnedAnchors.length;
   const everyAnchorIsExternalCanonical =
     input.anchors.length > 0 && externalCanonicalAnchorCount === input.anchors.length;
+  const canonicalTargetsLinked = linkedCanonicalTargets(
+    canonicalOwnedAnchors,
+    input.outboundInternalLinks,
+  );
+  const everyCanonicalTargetAlreadyLinked =
+    externalCanonicalAnchorCount > 0
+    && canonicalTargetsLinked.length === new Set(
+      canonicalOwnedAnchors
+        .map((a) => a.external_canonical?.url)
+        .filter((u): u is string => typeof u === "string")
+        .map(normalizeInternalPath)
+        .filter((p): p is string => p !== null),
+    ).size;
   const navigationalSummary = summarizeNavigationalIntent(input);
+  const bestListOffType = bestListOffTypeSummary(input);
 
   const hopelessLine = (() => {
     if (input.hopelessQueries.length === 0) return "none — no single subset of pos≥10 queries dominates the cluster";
@@ -1511,7 +1784,9 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     `- avg rank: ${input.avgPosition != null ? `#${input.avgPosition.toFixed(1)}` : "—"}`,
     `- CTR: ${ctrLine}`,
     `- cannibalization: ${cannibalMemberCount > 0 ? `${cannibalMemberCount} member(s) ALSO rank on other pages — see member lines` : "none detected"}`,
+    `- canonical target links: ${canonicalTargetsLinked.length > 0 ? canonicalTargetsLinked.join(", ") : "none detected from this page"}`,
     `- navigational intent: ${navigationalSummary.gate ? `blocked (${Math.round(navigationalSummary.impression_share * 100)}% impression share)` : "not dominant"}`,
+    `- best-list page fit: ${bestListOffType.gate ? `blocked for ${bestListOffType.reason} intent (${Math.round(bestListOffType.impression_share * 100)}% impression share)` : "no deterministic page-type block"}`,
     `- AI Overview: ${aioAnchorCount > 0
         ? `present on ${aioAnchorCount} of ${input.anchorAioPresence.length} anchors (HT cited on ${aioCitedCount}); ${aioImpSharePct}% of cluster impressions on AIO-present anchors`
         : "absent from all anchors with SERP data"}`,
@@ -1588,10 +1863,18 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   // HT page ranking top-10, no author task should be created on this URL,
   // regardless of what the model inferred from body coverage.
   if (everyAnchorIsExternalCanonical) {
-    kind = "cede";
     startWith = [];
     confidence = Math.max(confidence, 0.85);
-    recommendation = buildCanonicalCedeRecommendation(input);
+    if (
+      everyCanonicalTargetAlreadyLinked
+      && allowsSatisfiedCanonicalOverlap(input.pageContentType)
+    ) {
+      kind = "coverage_strong";
+      recommendation = buildSatisfiedCanonicalOverlapRecommendation(input, canonicalTargetsLinked);
+    } else {
+      kind = "cede";
+      recommendation = buildCanonicalCedeRecommendation(input);
+    }
   }
 
   if (navigationalSummary.gate) {
@@ -1603,6 +1886,17 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     startWith = [];
     confidence = Math.max(confidence, 0.85);
     recommendation = `Do not target this article for "${sample}": the cluster is dominated by navigational intent. Monitor the query or route any user-path fix outside the article update queue.`;
+  }
+
+  if (bestListOffType.gate && !navigationalSummary.gate) {
+    const sample = bestListOffType.sample ?? input.canonicalQuery;
+    const destination = bestListOffType.reason === "broad_price_or_cost"
+      ? "a dedicated price or cost guide"
+      : "the dedicated brand or product page";
+    kind = "wrong_page";
+    startWith = [];
+    confidence = Math.max(confidence, 0.85);
+    recommendation = `Do not target this best list for "${sample}": that intent belongs on ${destination}. Keep any mention as comparison context and link to the canonical owner instead of expanding the listicle around this term.`;
   }
 
   // (a) consolidate / cede require a real cannibalization signal. If the model
@@ -1686,8 +1980,22 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     recommendation = buildCanonicalReviewRecommendation(input.page, canonicalMentionViolations);
   }
 
+  let unsupportedProductMentions = findUnsupportedProductMentions(recommendation, input);
+  const unsafeUnsupportedProductMentions = unsupportedProductMentions;
+  const unsafeUnsupportedProductMentionCount = unsupportedProductMentions.length;
+  if (unsupportedProductMentions.length > 0) {
+    kind = "needs_review";
+    startWith = [];
+    confidence = Math.min(confidence, 0.4);
+    recommendation = buildUnsupportedProductReviewRecommendation(
+      unsupportedProductMentions,
+      recommendation,
+    );
+  }
+
   const hasUnsafeGuardrail =
     unsafeCanonicalMentionCount > 0
+    || unsafeUnsupportedProductMentionCount > 0
     || (kind === "needs_review" && confidence <= 0.4);
   const allowModerateConfidenceReady = shouldAllowModerateConfidenceReady({
     kind,
@@ -1725,11 +2033,23 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     if (canonicalMentionViolations.length > 0) {
       recommendation = buildCanonicalReviewRecommendation(input.page, canonicalMentionViolations);
     }
+    if (unsafeUnsupportedProductMentionCount === 0) {
+      unsupportedProductMentions = findUnsupportedProductMentions(recommendation, input);
+      if (unsupportedProductMentions.length > 0) {
+        recommendation = buildUnsupportedProductReviewRecommendation(
+          unsupportedProductMentions,
+          recommendation,
+        );
+      }
+    }
   }
 
   const guardrails: string[] = [];
   if (externalCanonicalAnchorCount > 0) {
     guardrails.push(`${externalCanonicalAnchorCount} canonical-owned anchor(s) excluded from author targets`);
+  }
+  if (canonicalTargetsLinked.length > 0) {
+    guardrails.push(`${canonicalTargetsLinked.length} canonical target(s) already linked from this page`);
   }
   if (nonCanonicalAioLossAnchors.length > 0) {
     guardrails.push(`${nonCanonicalAioLossAnchors.length} non-canonical AIO-loss anchor(s) available for source-friendly rewrites`);
@@ -1737,8 +2057,14 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   if (navigationalSummary.gate) {
     guardrails.push("navigational intent blocked from author targets");
   }
+  if (bestListOffType.gate) {
+    guardrails.push("best-list page type blocked exact brand/product or broad price intent");
+  }
   if (unsafeCanonicalMentionCount > 0) {
     guardrails.push("canonical-owned anchor appeared in action prose; routed to review");
+  }
+  if (unsafeUnsupportedProductMentionCount > 0) {
+    guardrails.push("unsupported product/model name appeared in prose; routed to review");
   }
   if (confidence < 0.6 && !allowModerateConfidenceReady) {
     guardrails.push("confidence below author-task threshold");
@@ -1791,6 +2117,8 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     audit: {
       prompt_version: COVERAGE_PROMPT_VERSION,
       page: input.page,
+      page_content_type: input.pageContentType,
+      page_content_type_signals: input.pageContentTypeSignals ?? [],
       cluster_label: input.clusterLabel,
       canonical_query: input.canonicalQuery,
       member_count: input.members.length,
@@ -1810,10 +2138,15 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
       external_canonical_anchor_count: externalCanonicalAnchorCount,
       canonical_owned_anchor_queries: canonicalOwnedAnchors.map((a) => a.query),
       actionable_anchor_queries: actionableAnchors.map((a) => a.query),
+      canonical_targets_already_linked: canonicalTargetsLinked,
       navigational_intent_gate: navigationalSummary.gate,
       navigational_impression_share: navigationalSummary.impression_share,
       supported_editorial_intent_share: navigationalSummary.supported_intent_share,
       navigational_anchor_queries: navigationalSummary.anchor_queries,
+      best_list_page_type_gate: bestListOffType.gate,
+      best_list_page_type_gate_reason: bestListOffType.reason,
+      best_list_page_type_gate_query: bestListOffType.sample,
+      best_list_page_type_gate_impression_share: bestListOffType.impression_share,
       standalone_article: standaloneArticle,
       recommendation_audit: recommendationAudit,
       editor_gap_checklist: editorGapChecklist,
@@ -1828,6 +2161,8 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
       noncanonical_aio_loss_anchor_count: nonCanonicalAioLossAnchors.length,
       canonical_mention_violation_count: unsafeCanonicalMentionCount,
       canonical_mention_violations: unsafeCanonicalMentionViolations,
+      unsupported_product_mention_count: unsafeUnsupportedProductMentionCount,
+      unsupported_product_mentions: unsafeUnsupportedProductMentions,
       editor_actionability: editorActionability,
       guardrails,
       primary_model_id: modelId,

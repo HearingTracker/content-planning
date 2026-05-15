@@ -519,6 +519,7 @@ function ClusterCard({
                 <KdRange min={o.min_kd} max={o.max_kd} />
               )}
               {o.is_branded && o.brand && <BrandTag brand={o.brand} />}
+              {o.page_content_type && <PageTypeTag type={o.page_content_type} />}
             </div>
           </div>
         </div>
@@ -716,6 +717,24 @@ function RoutingSuggestion({ targetPage }: { targetPage: string }) {
       </a>
       .
     </div>
+  );
+}
+
+function PageTypeTag({ type }: { type: NonNullable<SeoOpportunity["page_content_type"]> }) {
+  const labels: Record<NonNullable<SeoOpportunity["page_content_type"]>, string> = {
+    best_list: "Best list",
+    brand_page: "Brand page",
+    product_review: "Review",
+    comparison_page: "Compare",
+    price_or_buying_guide: "Price guide",
+    general_guide: "Guide",
+    generic_article: "Article",
+    unknown: "Unknown type",
+  };
+  return (
+    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 ring-1 ring-inset ring-slate-200">
+      {labels[type]}
+    </span>
   );
 }
 
