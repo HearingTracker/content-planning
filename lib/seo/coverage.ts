@@ -154,8 +154,13 @@ const CoverageSchema = z.object({
 //     under-qualified anchors such as "best overall", and treat canonical
 //     overlap on broad/list pages as satisfied when the page already links
 //     to the canonical owner.
+// v18: narrow the navigational gate to user-path intent. DataForSEO can label
+//     exact brand/product shopping queries as navigational, but "rexton
+//     hearing aids", "jabra reviews", and brand pricing/model queries should
+//     be routed to their canonical editorial owners, not blocked as login/store
+//     navigation.
 export const COVERAGE_PROMPT_VERSION =
-  process.env.SEO_COVERAGE_PROMPT_VERSION ?? "v17";
+  process.env.SEO_COVERAGE_PROMPT_VERSION ?? "v18";
 
 function resolveModelId(): string {
   const raw = process.env.SEO_COVERAGE_MODEL ?? process.env.SEO_LABEL_MODEL;
@@ -199,7 +204,7 @@ You will be given:
 - The page's body text (may be truncated).
 - A cluster of related Google Search Console queries the page ranks for in striking distance (positions 4–15), with TWO body-coverage signals per query: (a) "phrase×N in body" — exact-string occurrences of the literal query in the body text; (b) "topic NN%" — semantic max-cosine between the query embedding and the page's section embeddings (title, H1, every heading, body chunks). A topic score ≥55% means the page already has a section addressing that topic even if the literal phrase isn't there.
 - Aggregate ranking and CTR metrics for the cluster.
-- DataForSEO intent labels. Navigational-dominant clusters are blocked deterministically after classification; do not invent article-update work for user-path intent.
+- DataForSEO intent labels. User-path navigational clusters are blocked deterministically after classification; do not invent article-update work for login/store/provider/support/local intent. Exact brand/product shopping, review, pricing, model, and comparison queries may be labeled navigational by DataForSEO but should be routed by page-type fit, not treated as user-path navigation.
 - Anchor queries — the cluster's deterministically ranked top 3–5 low-hanging-fruit queries (high volume / low difficulty / close to top of striking distance), split into actionable anchors and canonical-owned deferrals. The recommendation MUST explicitly name at least one actionable anchor when any exists.
 - Cannibalization signals — for any cluster member that ALSO ranks in the LIVE top-20 organic SERP via another HearingTracker page, the competitor URL plus the queries that competitor currently wins (its strongest in-cluster rankings on this site). These are SERP-verified, not GSC-noise: a URL listed here is genuinely competing.
 - AI Overview signals — for each anchor query, whether the live SERP shows an AI Overview panel and whether THIS page is cited as one of the AIO sources. AI Overviews suppress organic CTR by ~30–60%; if a majority of cluster impressions sit on AIO-present queries, the standard expected-CTR baseline overstates the achievable ceiling. The cluster summary "AIO on N of M anchors (P% of cluster impressions)" tells you how dominant the AIO suppression is.
@@ -228,9 +233,9 @@ States (mutually exclusive — pick the BEST fit):
 
 Decision guidance:
 - Prefer coverage_partial over intent_gap when at least one heading or body passage already addresses a sibling angle of the cluster.
-- Do NOT recommend article updates for navigational-dominant clusters. If the query intent is primarily to reach a login, brand site, store page, account page, support portal, or other destination, the correct outcome is to block article work and route the issue outside the content update queue.
+- Do NOT recommend article updates for user-path navigational clusters. If the query intent is primarily to reach a login, brand site, store page, account page, support portal, local clinic/provider, or other non-editorial destination, the correct outcome is to block article work and route the issue outside the content update queue.
 - Do not target under-qualified modifier phrases such as "best overall" as standalone SEO work. They can describe a listicle slot, but they are not a search intent unless attached to a concrete topic like "hearing aids."
-- On best lists, exact brand/product anchors without "best", "review", "compare", "vs", or a similar list/review modifier usually belong to the brand/product page. If the best list already links there, the correct outcome is monitor/valid overlap, not cede noise.
+- On best lists, exact brand/product, brand-review, brand-price, and brand-model anchors usually belong to the brand/product/review page, not the broad list. If the best list already links there, the correct outcome is monitor/valid overlap or wrong_page routing, not expanding the listicle around that term.
 - On best lists, broad "hearing aids prices/cost" anchors usually belong to the dedicated cost/price guide unless the recommendation is about improving an existing comparison table's price fields, not adding a generic pricing section.
 - Prefer wrong_page over cede when there is NO cannibalization signal — wrong_page means "not the right topic for this page," cede means "right topic, wrong page."
 - Pick consolidate or cede ONLY when at least one anchor or member query has competing pages listed.
@@ -851,6 +856,58 @@ function hasNavigationalIntent(raw: string | null | undefined): boolean {
   return intentTags(raw).includes("navigational");
 }
 
+function hasBestListModifier(query: string): boolean {
+  return /\b(best|top|rated|recommended)\b/i.test(query);
+}
+
+function hasReviewModifier(query: string): boolean {
+  return /\breviews?\b/i.test(query);
+}
+
+function hasComparisonModifier(query: string): boolean {
+  return /\b(compare|comparison|vs|versus)\b/i.test(query);
+}
+
+function isPriceIntentQuery(query: string): boolean {
+  return /\b(price|prices|pricing|cost|costs|affordable|cheap|finance|financing|insurance|medicare)\b/i.test(query);
+}
+
+function isUserPathNavigationalQuery(query: string): boolean {
+  return /\b(login|log in|sign in|signin|account|portal|support|customer service|phone number|contact|appointment|appointments|near me|nearby|local|location|locations|store|stores|dealer|dealers|clinic|clinics|provider|providers)\b/i.test(query);
+}
+
+function isEditorialBrandOrProductQuery(query: string): boolean {
+  if (isUserPathNavigationalQuery(query)) return false;
+
+  const brand = detectBrand(query);
+  if (!brand.is_branded && !brand.retailer && !brand.product_family) return false;
+
+  return /\bhearing aids?\b/i.test(query)
+    || /\b(models?|brands?|ratings?|good|worth|reviews?)\b/i.test(query)
+    || hasBestListModifier(query)
+    || hasReviewModifier(query)
+    || hasComparisonModifier(query)
+    || isPriceIntentQuery(query);
+}
+
+function hasEditorialSupportedIntentForQuery(
+  query: string,
+  rawIntent: string | null | undefined,
+): boolean {
+  if (isUserPathNavigationalQuery(query)) return false;
+  if (hasStandaloneSupportedIntent(rawIntent)) return true;
+  if (intentTags(rawIntent).includes("transactional") && /\bhearing aids?\b/i.test(query)) {
+    return true;
+  }
+  return isEditorialBrandOrProductQuery(query);
+}
+
+function hasUserPathNavigationalIntent(member: CoverageMemberSignal): boolean {
+  if (isUserPathNavigationalQuery(member.query)) return true;
+  return hasNavigationalIntent(member.dataforseo_intents)
+    && !isEditorialBrandOrProductQuery(member.query);
+}
+
 function summarizeNavigationalIntent(input: CoverageInput): {
   gate: boolean;
   impression_share: number;
@@ -869,11 +926,11 @@ function summarizeNavigationalIntent(input: CoverageInput): {
     const imp = m.impressions ?? 0;
     totalImpressions += imp;
     if (!topMember || imp > (topMember.impressions ?? 0)) topMember = m;
-    if (hasNavigationalIntent(m.dataforseo_intents)) {
+    if (hasUserPathNavigationalIntent(m)) {
       navigationalMembers.push(m.query);
       navigationalImpressions += imp;
     }
-    if (hasStandaloneSupportedIntent(m.dataforseo_intents)) {
+    if (hasEditorialSupportedIntentForQuery(m.query, m.dataforseo_intents)) {
       supportedEditorialImpressions += imp;
     }
   }
@@ -884,20 +941,26 @@ function summarizeNavigationalIntent(input: CoverageInput): {
       ? navigationalMembers.length / input.members.length
       : 0;
   const navigationalAnchors = input.anchors
-    .filter((a) => hasNavigationalIntent(memberByQuery.get(a.query)?.dataforseo_intents))
+    .filter((a) => {
+      const member = memberByQuery.get(a.query);
+      return member ? hasUserPathNavigationalIntent(member) : false;
+    })
     .map((a) => a.query);
   const supportedIntentShare = totalImpressions > 0
     ? supportedEditorialImpressions / totalImpressions
     : input.members.length > 0
-      ? input.members.filter((m) => hasStandaloneSupportedIntent(m.dataforseo_intents)).length / input.members.length
+      ? input.members.filter((m) => hasEditorialSupportedIntentForQuery(m.query, m.dataforseo_intents)).length / input.members.length
       : 0;
-  const priorIsNavigational = hasNavigationalIntent(input.dataForSeoIntentPrior);
+  const priorIsNavigational =
+    hasNavigationalIntent(input.dataForSeoIntentPrior)
+    && !input.members.some((m) => isEditorialBrandOrProductQuery(m.query));
   const allAnchorsNavigational =
     input.anchors.length > 0 && navigationalAnchors.length === input.anchors.length;
-  const canonicalNavigational = hasNavigationalIntent(
-    memberByQuery.get(input.canonicalQuery)?.dataforseo_intents,
-  );
-  const topNavigational = hasNavigationalIntent(topMember?.dataforseo_intents);
+  const canonicalMember = memberByQuery.get(input.canonicalQuery);
+  const canonicalNavigational = canonicalMember
+    ? hasUserPathNavigationalIntent(canonicalMember)
+    : false;
+  const topNavigational = topMember ? hasUserPathNavigationalIntent(topMember) : false;
   const dominantNavigational =
     impressionShare >= 0.5 && supportedIntentShare < 0.25;
   const priorConfirmed =
@@ -906,20 +969,15 @@ function summarizeNavigationalIntent(input: CoverageInput): {
     (priorIsNavigational || canonicalNavigational) && topNavigational && impressionShare >= 0.35 && supportedIntentShare < 0.35;
 
   return {
-    gate: allAnchorsNavigational || dominantNavigational || priorConfirmed || navigationalHead,
+    gate: (allAnchorsNavigational && supportedIntentShare < 0.35)
+      || dominantNavigational
+      || priorConfirmed
+      || navigationalHead,
     impression_share: Math.round(impressionShare * 1000) / 1000,
     supported_intent_share: Math.round(supportedIntentShare * 1000) / 1000,
     anchor_queries: navigationalAnchors,
     member_queries: navigationalMembers,
   };
-}
-
-function hasListOrReviewModifier(query: string): boolean {
-  return /\b(best|top|review|reviews|compare|comparison|vs|versus)\b/i.test(query);
-}
-
-function isPriceIntentQuery(query: string): boolean {
-  return /\b(price|prices|pricing|cost|costs|affordable|cheap|finance|financing|insurance|medicare)\b/i.test(query);
 }
 
 function bestListOffTypeSummary(input: CoverageInput): {
@@ -935,11 +993,19 @@ function bestListOffTypeSummary(input: CoverageInput): {
   const offTypeQueries = new Set<string>();
   let reason: "exact_brand_or_product" | "broad_price_or_cost" | null = null;
   for (const m of input.members) {
-    if (hasListOrReviewModifier(m.query)) continue;
     const brand = detectBrand(m.query);
     if (brand.is_branded || brand.retailer || brand.product_family) {
-      offTypeQueries.add(m.query);
-      reason ??= "exact_brand_or_product";
+      const brandHearingAidIntent = /\bhearing aids?\b/i.test(m.query);
+      const brandEditorialModifier =
+        hasReviewModifier(m.query)
+        || hasComparisonModifier(m.query)
+        || isPriceIntentQuery(m.query);
+      const brandBestListIntent = hasBestListModifier(m.query);
+
+      if (brandHearingAidIntent || brandEditorialModifier || !brandBestListIntent) {
+        offTypeQueries.add(m.query);
+        reason ??= "exact_brand_or_product";
+      }
       continue;
     }
     if (isPriceIntentQuery(m.query)) {
@@ -1021,7 +1087,7 @@ function maxTopicScore(input: CoverageInput): number | null {
 
 function informationalOrCommercialQueries(input: CoverageInput): string[] {
   return input.members
-    .filter((m) => hasStandaloneSupportedIntent(m.dataforseo_intents))
+    .filter((m) => hasEditorialSupportedIntentForQuery(m.query, m.dataforseo_intents))
     .sort((a, b) => (b.impressions ?? 0) - (a.impressions ?? 0))
     .map((m) => m.query);
 }
@@ -1093,8 +1159,8 @@ function scoreStandaloneArticleCandidate(args: {
   ).slice(0, 4);
 
   const failed: string[] = [];
-  if (!criteria.not_navigational_gated) failed.push("navigational intent dominates");
-  if (!criteria.supported_intent) failed.push("intent is not informational or commercial investigation");
+  if (!criteria.not_navigational_gated) failed.push("user-path navigational intent dominates");
+  if (!criteria.supported_intent) failed.push("intent is not editorial informational, commercial, or shopping research");
   if (!criteria.meaningful_demand) failed.push("demand is below the standalone threshold");
   if (!criteria.partial_subsection_coverage) failed.push("current page does not look like a partial subsection match");
   if (!criteria.dedicated_article_depth) failed.push("query set is too thin for a dedicated article");
@@ -1230,8 +1296,9 @@ function buildRecommendationTriggers(args: {
       : "review_guardrail";
 
   const intents = uniqueIntentTags(input);
-  const supportedIntent = hasStandaloneSupportedIntent(input.dataForSeoIntentPrior)
-    || input.members.some((m) => hasStandaloneSupportedIntent(m.dataforseo_intents));
+  const supportedIntent =
+    hasStandaloneSupportedIntent(input.dataForSeoIntentPrior)
+    || input.members.some((m) => hasEditorialSupportedIntentForQuery(m.query, m.dataforseo_intents));
 
   return {
     recommendation_trigger: recommendationTrigger,
@@ -1246,9 +1313,9 @@ function buildRecommendationTriggers(args: {
     intent_trigger: {
       triggered: navigationalGate || supportedIntent,
       reason: navigationalGate
-        ? "Navigational intent blocks article-update work."
+        ? "User-path navigational intent blocks article-update work."
         : supportedIntent
-          ? "Informational or commercial investigation intent supports editorial work."
+          ? "Informational, commercial investigation, or shopping research intent supports editorial work."
           : "No supported editorial intent signal found.",
       intents,
       navigational_gate: navigationalGate,
@@ -1806,7 +1873,7 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     `- CTR: ${ctrLine}`,
     `- cannibalization: ${cannibalMemberCount > 0 ? `${cannibalMemberCount} member(s) ALSO rank on other pages — see member lines` : "none detected"}`,
     `- canonical target links: ${canonicalTargetsLinked.length > 0 ? canonicalTargetsLinked.join(", ") : "none detected from this page"}`,
-    `- navigational intent: ${navigationalSummary.gate ? `blocked (${Math.round(navigationalSummary.impression_share * 100)}% impression share)` : "not dominant"}`,
+    `- user-path navigational intent: ${navigationalSummary.gate ? `blocked (${Math.round(navigationalSummary.impression_share * 100)}% impression share)` : "not dominant"}`,
     `- best-list page fit: ${bestListOffType.gate ? `blocked for ${bestListOffType.reason} intent (${Math.round(bestListOffType.impression_share * 100)}% impression share)` : "no deterministic page-type block"}`,
     `- AI Overview: ${aioAnchorCount > 0
         ? `present on ${aioAnchorCount} of ${input.anchorAioPresence.length} anchors (HT cited on ${aioCitedCount}); ${aioImpSharePct}% of cluster impressions on AIO-present anchors`
@@ -1906,7 +1973,7 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     kind = "wrong_page";
     startWith = [];
     confidence = Math.max(confidence, 0.85);
-    recommendation = `Do not target this article for "${sample}": the cluster is dominated by navigational intent. Monitor the query or route any user-path fix outside the article update queue.`;
+    recommendation = `Do not target this article for "${sample}": the cluster is dominated by user-path navigational intent. Monitor the query or route any login, local, support, or store-path fix outside the article update queue.`;
   }
 
   if (bestListOffType.gate && !navigationalSummary.gate) {
@@ -2076,7 +2143,7 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     guardrails.push(`${nonCanonicalAioLossAnchors.length} non-canonical AIO-loss anchor(s) available for source-friendly rewrites`);
   }
   if (navigationalSummary.gate) {
-    guardrails.push("navigational intent blocked from author targets");
+    guardrails.push("user-path navigational intent blocked from author targets");
   }
   if (bestListOffType.gate) {
     guardrails.push("best-list page type blocked exact brand/product or broad price intent");

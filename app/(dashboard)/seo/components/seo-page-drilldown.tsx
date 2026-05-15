@@ -472,8 +472,11 @@ function ClusterCard({
   const missedClicks = Number(o.total_missed_clicks ?? 0);
   const lift = computeLiftDisplay(o, missedClicks);
   const isNonEdit = o.actionability === "blocked" || o.actionability === "monitor";
+  const clusterCanonicalTarget = isNonEdit ? routeTargetFromExternalCanonicals(o) : null;
   const routeTarget = isNonEdit
-    ? anchorFindings.find((f) => f.target_page && f.target_page !== currentPage)?.target_page ?? null
+    ? clusterCanonicalTarget
+      ?? anchorFindings.find((f) => f.target_page && f.target_page !== currentPage)?.target_page
+      ?? null
     : null;
   const visibleAnchorFindings = routeTarget
     ? anchorFindings.filter((f) => f.target_page !== routeTarget)
@@ -703,6 +706,34 @@ function computeLiftDisplay(
   return { raw: rawMissedClicks, adjusted, capped };
 }
 
+function routeTargetFromExternalCanonicals(opp: SeoOpportunity): string | null {
+  const counts = new Map<string, number>();
+  for (const canonical of Object.values(opp.external_canonicals)) {
+    const path = pathFromCanonicalUrl(canonical.url);
+    if (!path || path === opp.page) continue;
+    counts.set(path, (counts.get(path) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+
+  return [...counts.entries()]
+    .sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      const aDepth = a[0].split("/").filter(Boolean).length;
+      const bDepth = b[0].split("/").filter(Boolean).length;
+      if (aDepth !== bDepth) return aDepth - bDepth;
+      return a[0].length - b[0].length;
+    })[0][0];
+}
+
+function pathFromCanonicalUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname.replace(/\/+$/, "") || "/";
+  } catch {
+    return url.startsWith("/") ? url.replace(/\/+$/, "") || "/" : null;
+  }
+}
+
 function RoutingSuggestion({ targetPage }: { targetPage: string }) {
   return (
     <div className="mx-5 mb-2 rounded-md bg-slate-50 px-3 py-2 text-[12px] leading-snug text-slate-800 ring-1 ring-inset ring-slate-200">
@@ -859,7 +890,7 @@ function ActionabilityNotice({
 }
 
 const STANDALONE_CRITERION_LABELS: Record<string, string> = {
-  not_navigational_gated: "Not navigational",
+  not_navigational_gated: "Not user-path",
   supported_intent: "Info/commercial intent",
   meaningful_demand: "Meaningful demand",
   partial_subsection_coverage: "Partial subsection",
@@ -1062,7 +1093,7 @@ function RecommendationAuditPanel({
 
 function standaloneStatusLabel(standalone: NonNullable<SeoOpportunity["standalone_article"]>): string {
   if (standalone.recommended) return "Recommended";
-  if (standalone.criteria.not_navigational_gated === false) return "Blocked: navigational";
+  if (standalone.criteria.not_navigational_gated === false) return "Blocked: user-path";
   if (standalone.criteria.meaningful_demand === false) return "Not enough demand";
   if (standalone.criteria.no_existing_canonical === false) return "Keep as page update";
   if (standalone.score >= 75) return "Near miss";
@@ -1110,7 +1141,7 @@ function triggerLabel(trigger: string): string {
     aio_present_on_serp_without_ht_source: "AIO SERP source gap",
     cannibalization: "Cannibalization",
     external_canonical: "External canonical",
-    navigational_intent_block: "Navigation block",
+    navigational_intent_block: "User-path block",
     wrong_page_or_navigation: "Wrong page",
     monitor: "Monitor",
     review_guardrail: "Review guardrail",

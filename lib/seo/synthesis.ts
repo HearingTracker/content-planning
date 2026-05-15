@@ -220,12 +220,24 @@ function inferSynthesisPageContentType(page: string, title: string | null): Synt
   return title ? "generic_article" : "unknown";
 }
 
-function hasListOrReviewModifier(query: string): boolean {
-  return /\b(best|top|review|reviews|compare|comparison|vs|versus)\b/i.test(query);
+function hasBestListModifier(query: string): boolean {
+  return /\b(best|top|rated|recommended)\b/i.test(query);
+}
+
+function hasReviewModifier(query: string): boolean {
+  return /\breviews?\b/i.test(query);
+}
+
+function hasComparisonModifier(query: string): boolean {
+  return /\b(compare|comparison|vs|versus)\b/i.test(query);
 }
 
 function isPriceIntentQuery(query: string): boolean {
   return /\b(price|prices|pricing|cost|costs|affordable|cheap|finance|financing|insurance|medicare)\b/i.test(query);
+}
+
+function isLocalIntentQuery(query: string): boolean {
+  return /\b(near me|nearby|local|location|locations|store|stores|dealer|dealers|clinic|clinics|provider|providers)\b/i.test(query);
 }
 
 function scoreQueryPageFit(query: string, page: PageRow | undefined): {
@@ -241,23 +253,38 @@ function scoreQueryPageFit(query: string, page: PageRow | undefined): {
   const haystack = `${page.page} ${page.page_title ?? ""}`.toLowerCase();
   const brand = detectBrand(query);
   const hasBrand = Boolean(brand.brand || brand.product_family || brand.retailer);
-  const hasModifier = hasListOrReviewModifier(query);
+  const hasBestModifier = hasBestListModifier(query);
+  const hasReview = hasReviewModifier(query);
+  const hasComparison = hasComparisonModifier(query);
   const priceIntent = isPriceIntentQuery(query);
   const reasons: string[] = [`content_type:${contentType}`];
   let score = 0.5;
+
+  if (isLocalIntentQuery(query)) {
+    return {
+      score: 0.05,
+      content_type: contentType,
+      reasons: [...reasons, "local/provider intent is not an article target"],
+    };
+  }
 
   if (hasBrand) {
     const ownerToken = brand.brand ?? brand.product_family ?? brand.retailer ?? "";
     const ownerNeedles = [ownerToken, ownerToken.replace(/-/g, " ")].filter(Boolean);
     if (ownerNeedles.some((needle) => haystack.includes(needle))) {
-      score += 0.35;
+      score += 0.4;
       reasons.push("brand/page token match");
     } else if (contentType === "brand_page" || contentType === "product_review") {
-      score += 0.15;
-      reasons.push("brand/product page type");
-    } else if (contentType === "best_list" && !hasModifier) {
-      score -= 0.45;
-      reasons.push("exact brand query on best list");
+      score += hasReview ? 0.3 : 0.2;
+      reasons.push(hasReview ? "brand review intent fits brand/product page" : "brand/product page type");
+    } else if (contentType === "best_list") {
+      if (hasBestModifier && !hasReview && !priceIntent) {
+        score += 0.05;
+        reasons.push("best-list modifier softens brand mismatch");
+      } else {
+        score -= 0.45;
+        reasons.push("exact brand/product intent on best list");
+      }
     } else {
       score -= 0.15;
       reasons.push("brand query without brand-owner page fit");
@@ -268,7 +295,10 @@ function scoreQueryPageFit(query: string, page: PageRow | undefined): {
     if (contentType === "price_or_buying_guide") {
       score += 0.35;
       reasons.push("price intent matches price guide");
-    } else if (contentType === "best_list" && !hasModifier) {
+    } else if ((contentType === "brand_page" || contentType === "product_review") && hasBrand) {
+      score += 0.15;
+      reasons.push("brand price intent can fit brand/product page");
+    } else if (contentType === "best_list" && !hasBestModifier) {
       score -= 0.35;
       reasons.push("broad price intent on best list");
     } else {
@@ -277,10 +307,25 @@ function scoreQueryPageFit(query: string, page: PageRow | undefined): {
     }
   }
 
-  if (hasModifier) {
-    if (contentType === "best_list" || contentType === "comparison_page" || contentType === "product_review") {
+  if (hasBestModifier) {
+    if (contentType === "best_list") {
       score += 0.25;
-      reasons.push("list/review modifier fits page type");
+      reasons.push("best-list modifier fits page type");
+    }
+  }
+  if (hasReview) {
+    if (contentType === "product_review" || contentType === "brand_page") {
+      score += 0.3;
+      reasons.push("review modifier fits brand/product page");
+    } else if (contentType === "best_list" && hasBrand) {
+      score -= 0.2;
+      reasons.push("brand review intent does not fit broad best list");
+    }
+  }
+  if (hasComparison) {
+    if (contentType === "comparison_page" || contentType === "product_review") {
+      score += 0.3;
+      reasons.push("comparison modifier fits page type");
     }
   }
 
@@ -889,15 +934,28 @@ export async function detectOrphanTargets(
 
   const findings: SynthesisFinding[] = [];
   for (const cand of toEmbed) {
+    if (isLocalIntentQuery(cand.query)) continue;
+
     const emb = embeddingByQuery.get(cand.query);
     if (!emb) continue;
 
-    let best: { cluster: ClusterRow; cosine: number } | null = null;
+    let best: {
+      cluster: ClusterRow;
+      cosine: number;
+      targetFit: ReturnType<typeof scoreQueryPageFit>;
+      combined: number;
+    } | null = null;
     for (const cl of clustersWithCentroids) {
       const sim = cosine(emb, cl.current_centroid!);
-      if (!best || sim > best.cosine) best = { cluster: cl, cosine: sim };
+      if (sim < thresholds.orphan_minAdjacencyCosine) continue;
+      const targetFit = scoreQueryPageFit(cand.query, state.pagesById.get(cl.page));
+      if (targetFit.score < 0.35) continue;
+      const combined = sim * targetFit.score;
+      if (!best || combined > best.combined) {
+        best = { cluster: cl, cosine: sim, targetFit, combined };
+      }
     }
-    if (!best || best.cosine < thresholds.orphan_minAdjacencyCosine) continue;
+    if (!best) continue;
 
     const sv = cand.sv;
     if (sv > 0 && sv < thresholds.orphan_minSv) continue;
@@ -919,6 +977,7 @@ export async function detectOrphanTargets(
         adjacent_cluster_id: best.cluster.id,
         adjacent_cluster_page: best.cluster.page,
         adjacent_cluster_query: best.cluster.canonical_query,
+        selected_target_fit: best.targetFit,
         serp_top_3: cand.serp.top_organic.slice(0, 3).map((r) => ({
           rank: r.rank,
           url: r.url,
@@ -976,9 +1035,19 @@ export function detectAuthorityCappedSerps(
       : 0;
     if (sv > 0 && sv < thresholds.authority_minSv) continue;
 
-    const best = htRankings.length > 0
-      ? htRankings.sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity))[0]
-      : null;
+    const rankedTargets = htRankings
+      .map((r) => ({
+        row: r,
+        fit: scoreQueryPageFit(query, state.pagesById.get(r.page)),
+      }))
+      .filter((r) => r.fit.score >= 0.35)
+      .sort((a, b) => {
+        if (b.fit.score !== a.fit.score) return b.fit.score - a.fit.score;
+        return (a.row.position ?? Infinity) - (b.row.position ?? Infinity);
+      });
+    const best = rankedTargets[0]?.row ?? null;
+    const bestFit = rankedTargets[0]?.fit ?? null;
+    if (htRankings.length > 0 && !best) continue;
 
     findings.push({
       kind: "authority_capped_serp",
@@ -993,6 +1062,7 @@ export function detectAuthorityCappedSerps(
         top_n_checked: thresholds.authority_topNToCheck,
         ht_best_position: best?.position ?? null,
         ht_best_page: best?.page ?? null,
+        selected_target_fit: bestFit,
         domain_list_snapshot: AUTHORITY_DOMAIN_SUFFIXES,
         serp_fetched_at: serp.fetched_at,
         thresholds: {
