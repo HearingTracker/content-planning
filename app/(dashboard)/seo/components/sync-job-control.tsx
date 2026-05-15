@@ -131,10 +131,15 @@ function SyncJobPanel({ job }: { job: SeoSyncJob }) {
   const progress = job.phase_progress;
   const percent =
     progress && progress.total > 0
-      ? Math.round((progress.completed / progress.total) * 100)
+      ? clamp(Math.round((progress.completed / progress.total) * 100), 0, 100)
       : null;
 
   const failed = job.status === "failed";
+  const progressDetail = progress?.detail?.trim();
+  const currentLabel = failed ? "Sync failed" : progressDetail || meta.label;
+  const phaseContext = progressDetail && progressDetail !== meta.label ? meta.label : null;
+  const progressUnit = formatProgressUnit(progress?.label, meta.label, progressDetail, phase);
+  const latestActivity = formatLatestActivity(job.log_tail?.[0], currentLabel);
 
   return (
     <div
@@ -160,9 +165,16 @@ function SyncJobPanel({ job }: { job: SeoSyncJob }) {
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-foreground text-sm font-medium leading-tight">
-              {failed ? "Sync failed" : meta.label}
-            </span>
+            <div className="min-w-0">
+              <span className="text-foreground block text-sm font-medium leading-tight">
+                {currentLabel}
+              </span>
+              {phaseContext && (
+                <span className="text-muted-foreground mt-0.5 block text-[11px] leading-tight">
+                  {phaseContext}
+                </span>
+              )}
+            </div>
             <span className="text-muted-foreground text-[11px] tabular-nums shrink-0">
               {formatElapsed(elapsedMs)}
             </span>
@@ -178,7 +190,7 @@ function SyncJobPanel({ job }: { job: SeoSyncJob }) {
               <div className="text-muted-foreground mt-1 flex items-center justify-between text-[11px] tabular-nums">
                 <span>
                   {progress.completed.toLocaleString()} / {progress.total.toLocaleString()}
-                  {progress.label ? ` ${progress.label}` : ""}
+                  {progressUnit ? ` ${progressUnit}` : ""}
                 </span>
                 {percent != null && <span>{percent}%</span>}
               </div>
@@ -188,6 +200,11 @@ function SyncJobPanel({ job }: { job: SeoSyncJob }) {
             <div className="text-muted-foreground mt-1 inline-flex items-center gap-1 text-[11px]">
               <Loader2 className="h-3 w-3 animate-spin" />
               working…
+            </div>
+          )}
+          {!failed && latestActivity && (
+            <div className="text-muted-foreground mt-1 truncate text-[11px]">
+              {latestActivity}
             </div>
           )}
           {failed && job.error_message && (
@@ -224,6 +241,35 @@ function formatElapsed(ms: number): string {
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
   return `${m}m ${s.toString().padStart(2, "0")}s`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function formatProgressUnit(
+  label: string | undefined,
+  phaseLabel: string,
+  progressDetail: string | undefined,
+  phase: SeoSyncJobPhase,
+): string {
+  if (!label) return "";
+  if (label === phaseLabel || label === progressDetail) return defaultProgressUnit(phase);
+  return label;
+}
+
+function defaultProgressUnit(phase: SeoSyncJobPhase): string {
+  if (phase === "label" || phase === "match" || phase === "classify") return "clusters";
+  if (phase === "embed") return "queries";
+  if (phase === "upsert") return "pages";
+  return "";
+}
+
+function formatLatestActivity(line: string | undefined, currentLabel: string): string | null {
+  if (!line) return null;
+  const activity = line.replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, "").replace(/^▸\s*/, "");
+  if (!activity || activity === currentLabel) return null;
+  return activity;
 }
 
 function formatStats(job: SeoSyncJob): string {

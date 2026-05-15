@@ -185,6 +185,16 @@ export type ExistingClusterForMatch = {
   brand: string | null;
   retailer: string | null;
   product_family: string | null;
+  coverage_kind?: string | null;
+  coverage_recommendation?: string | null;
+  coverage_confidence?: number | null;
+  coverage_model?: string | null;
+  coverage_prompt_v?: string | null;
+  coverage_input_digest?: Record<string, unknown> | null;
+  coverage_classified_at?: string | null;
+  start_with_queries?: string[] | null;
+  coverage_cache_key?: string | null;
+  coverage_classified_in_job_id?: number | null;
 };
 
 export type CandidateForMatch = {

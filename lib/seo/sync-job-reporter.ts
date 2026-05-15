@@ -34,6 +34,46 @@ export const PHASE_LABELS: Record<PhaseKey, string> = {
 
 const LOG_TAIL_MAX = 50;
 
+type PhaseProgress = {
+  completed: number;
+  total: number;
+  label?: string;
+  detail?: string;
+};
+
+type PhaseStartProgress =
+  | number
+  | {
+      total?: number;
+      label?: string;
+      detail?: string;
+    };
+
+function makePhaseProgress(
+  completed: number,
+  total: number,
+  label?: string,
+  detail?: string,
+): PhaseProgress {
+  const progress: PhaseProgress = { completed, total };
+  if (label) progress.label = label;
+  if (detail) progress.detail = detail;
+  return progress;
+}
+
+function normalizePhaseStartProgress(progress?: PhaseStartProgress): PhaseProgress | null {
+  if (progress == null) return null;
+  if (typeof progress === "number") {
+    return makePhaseProgress(0, progress);
+  }
+  return makePhaseProgress(0, progress.total ?? 0, progress.label, progress.detail);
+}
+
+function formatPhaseLog(phase: PhaseKey, progress: PhaseProgress | null): string {
+  if (!progress || progress.total <= 0) return PHASE_LABELS[phase];
+  return `${PHASE_LABELS[phase]} (${progress.total.toLocaleString()}${progress.label ? ` ${progress.label}` : ""})`;
+}
+
 export type CompletionStats = {
   pages_processed: number;
   clusters_created: number;
@@ -64,7 +104,7 @@ export class SyncJobReporter {
     await this.log("Sync job started");
   }
 
-  async setPhase(phase: PhaseKey, total?: number): Promise<void> {
+  async setPhase(phase: PhaseKey, progress?: PhaseStartProgress): Promise<void> {
     // Close out the previous phase in phase_history before flipping.
     if (this.phaseStartedAt) {
       await this.appendPhaseHistory({
@@ -79,23 +119,29 @@ export class SyncJobReporter {
     this.previousPhase = phase;
     this.previousItems = 0;
 
+    const phaseProgress = normalizePhaseStartProgress(progress);
     const update: Record<string, unknown> = {
       current_phase: phase,
-      phase_progress: total != null ? { completed: 0, total, label: PHASE_LABELS[phase] } : null,
+      phase_progress: phaseProgress,
     };
     const { error } = await this.supabase
       .from("cp_seo_sync_jobs")
       .update(update)
       .eq("id", this.jobId);
     if (error) throw new Error(`reporter.setPhase(${phase}): ${error.message}`);
-    await this.log(`▸ ${PHASE_LABELS[phase]}${total != null ? ` (${total})` : ""}`);
+    await this.log(`▸ ${formatPhaseLog(phase, phaseProgress)}`);
   }
 
-  async setProgress(completed: number, total: number, label?: string): Promise<void> {
+  async setProgress(
+    completed: number,
+    total: number,
+    label?: string,
+    detail?: string,
+  ): Promise<void> {
     this.previousItems = completed;
     const { error } = await this.supabase
       .from("cp_seo_sync_jobs")
-      .update({ phase_progress: { completed, total, label } })
+      .update({ phase_progress: makePhaseProgress(completed, total, label, detail) })
       .eq("id", this.jobId);
     if (error) throw new Error(`reporter.setProgress: ${error.message}`);
   }

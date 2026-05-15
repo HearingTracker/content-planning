@@ -24,7 +24,9 @@ import {
 } from "./cluster";
 import { labelClustersConcurrently, type LabelInput, type LabelResult } from "./label";
 import {
+  COVERAGE_KINDS,
   classifyClustersConcurrently,
+  getCoverageClassifierConfig,
   rankAnchorQueries,
   type AnchorCandidate,
   type CompetingPage,
@@ -225,7 +227,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
     await reporter.start();
 
     // ── Phase: data fetch (existing pipeline in clustering mode) ──────────
-    await reporter.setPhase("gsc");
+    await reporter.setPhase("gsc", { detail: "Pulling source data" });
     const { pages, opportunities, pageMetas } = await runOpportunityExport({
       includeAllForClustering: true,
     });
@@ -238,27 +240,37 @@ export async function runSyncJob(jobId: number): Promise<void> {
     }
 
     // ── Phase: embed (unique queries only) ────────────────────────────────
-    await reporter.setPhase("embed");
+    await reporter.setPhase("embed", { detail: "Preparing query embeddings" });
     const uniqueQueries = [...new Set(opportunities.map((o) => o.query))];
-    await reporter.setProgress(0, uniqueQueries.length, "queries");
+    await reporter.setProgress(0, uniqueQueries.length, "queries", "Embedding queries");
     const embedResult = await embedQueries(uniqueQueries);
     embedTokens += embedResult.inputTokens;
     const embedByQuery = new Map<string, number[]>();
     for (let i = 0; i < uniqueQueries.length; i++) {
       embedByQuery.set(uniqueQueries[i], embedResult.embeddings[i]);
     }
-    await reporter.setProgress(uniqueQueries.length, uniqueQueries.length, "queries");
+    await reporter.setProgress(uniqueQueries.length, uniqueQueries.length, "queries", "Embedding queries");
 
     // ── Phase: cluster (per page) ─────────────────────────────────────────
-    await reporter.setPhase("cluster");
+    await reporter.setPhase("cluster", { detail: "Clustering queries by page" });
     const candidatesByPage = clusterAllPages(opportunities, embedByQuery);
     const candidateCount = sumValues(candidatesByPage, (cs) => cs.length);
+    await reporter.setProgress(
+      candidateCount,
+      candidateCount,
+      "candidate clusters",
+      "Clustering queries by page",
+    );
     await reporter.log(
       `Built ${candidateCount} candidate clusters across ${candidatesByPage.size} pages`,
     );
 
     // ── Phase: label (concurrent LLM calls) ───────────────────────────────
-    await reporter.setPhase("label", candidateCount);
+    await reporter.setPhase("label", {
+      total: candidateCount,
+      label: "clusters",
+      detail: "Labeling clusters",
+    });
     const flatCandidates = flattenWithPage(candidatesByPage);
     const labelInputs: LabelInput[] = flatCandidates.map((c) => ({
       memberQueries: c.cluster.members.map((m) => m.query),
@@ -275,21 +287,28 @@ export async function runSyncJob(jobId: number): Promise<void> {
         llmOut += r.tokens.output;
         done += 1;
         // Fire-and-forget — progress write shouldn't block.
-        void reporter.setProgress(done, candidateCount, "clusters");
+        void reporter.setProgress(done, candidateCount, "clusters", "Labeling clusters");
       },
     });
 
     // ── Phase: match against existing ─────────────────────────────────────
-    await reporter.setPhase("match");
+    await reporter.setPhase("match", { detail: "Loading existing clusters" });
     const existingByPage = await loadExistingClustersByPage(supabase, [...candidatesByPage.keys()]);
+    await reporter.setProgress(0, candidateCount, "clusters", "Matching against existing clusters");
     const matchedByPage = matchAllPages(candidatesByPage, labels, existingByPage);
+    await reporter.setProgress(
+      candidateCount,
+      candidateCount,
+      "clusters",
+      "Matching against existing clusters",
+    );
     const matchSummary = summarizeMatches(matchedByPage);
     await reporter.log(
       `Matches — auto: ${matchSummary.auto}, review: ${matchSummary.review}, new: ${matchSummary.new_}`,
     );
 
     // ── Phase: classify (per-cluster coverage LLM) ────────────────────────
-    await reporter.setPhase("classify", candidateCount);
+    await reporter.setPhase("classify", { detail: "Preparing coverage analysis" });
     // Build cross-page query → competing pages map ONCE for the whole sync.
     // Any query that appears in striking-distance findings on more than one
     // revenue page is a cannibalization CANDIDATE — we then verify each via
@@ -312,17 +331,39 @@ export async function runSyncJob(jobId: number): Promise<void> {
     await reporter.log(
       `Fetching SERPs — ${serpsToFetch.length} unique queries (${multiPageQueries.length} multi-page + ${anchorQueriesAcrossClusters.length} anchor)…`,
     );
+    if (serpsToFetch.length > 0) {
+      await reporter.setProgress(0, serpsToFetch.length, "SERP queries", "Checking SERP cache");
+    }
     let lastSerpProgressLogged = 0;
+    let lastSerpProgressReported = 0;
+    let cachedSerpCount = 0;
     const serpDataByQuery = serpsToFetch.length > 0
       ? await loadSerps(serpsToFetch, "us", {
-          onCacheRead: (cached, misses) =>
-            void reporter.log(`SERP cache — ${cached} hits, ${misses} to fetch live`),
-          onFetchProgress: (completed, total) => {
+          onCacheRead: async (cached, misses) => {
+            cachedSerpCount = cached;
+            await reporter.setProgress(
+              cached,
+              cached + misses,
+              "SERP queries",
+              misses > 0 ? "Fetching live SERPs" : "SERP cache warm",
+            );
+            await reporter.log(`SERP cache — ${cached} hits, ${misses} to fetch live`);
+          },
+          onFetchProgress: async (completed, total) => {
             // Throttle to roughly every 10% so we don't flood log_tail.
             const step = Math.max(10, Math.ceil(total / 10));
             if (completed - lastSerpProgressLogged >= step || completed === total) {
               lastSerpProgressLogged = completed;
-              void reporter.log(`SERP fetch progress — ${completed}/${total}`);
+              await reporter.log(`SERP fetch progress — ${completed}/${total}`);
+            }
+            if (completed - lastSerpProgressReported >= step || completed === total) {
+              lastSerpProgressReported = completed;
+              await reporter.setProgress(
+                cachedSerpCount + completed,
+                cachedSerpCount + total,
+                "SERP queries",
+                "Fetching live SERPs",
+              );
             }
           },
         })
@@ -340,13 +381,16 @@ export async function runSyncJob(jobId: number): Promise<void> {
     // the classifier can distinguish "exact phrase missing" from "topic
     // missing". Without this, /best-hearing-aids gets told to "add a pricing
     // section" even though it has an H2 "How much do hearing aids cost?".
+    await reporter.setProgress(0, pageMetas.size, "pages", "Embedding page sections");
     await reporter.log(`Embedding page sections — ${pageMetas.size} pages…`);
     const sectionEmb = await embedPageSections(pageMetas);
     embedTokens += sectionEmb.tokens;
+    await reporter.setProgress(pageMetas.size, pageMetas.size, "pages", "Embedding page sections");
     await reporter.log(
       `Section embeddings — ${sectionEmb.embeddings.size} pages, ${sectionEmb.tokens.toLocaleString()} input tokens`,
     );
 
+    await reporter.setProgress(0, candidateCount, "clusters", "Building coverage inputs");
     const coverageInputs = buildCoverageInputs(
       flatCandidates,
       labels,
@@ -356,6 +400,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
       oppByPageQuery,
       sectionEmb.embeddings,
     );
+    await reporter.setProgress(coverageInputs.length, candidateCount, "clusters", "Building coverage inputs");
     const anchorsByCluster = coverageInputs.map((ci) =>
       ci.anchors.map((a) => ({ query: a.query, score: a.score })),
     );
@@ -391,17 +436,49 @@ export async function runSyncJob(jobId: number): Promise<void> {
     const cannibalByCluster = coverageInputs.map((ci) => buildCannibalOverlap(ci.members));
 
     let classifiedDone = 0;
-    let coverageEmitted: CoverageResult[] = [];
+    let coverageEmitted: CoverageResult[] = new Array(coverageInputs.length);
     if (coverageInputs.length > 0) {
-      coverageEmitted = await classifyClustersConcurrently(coverageInputs, {
+      await reporter.setProgress(0, coverageInputs.length, "clusters", "Checking coverage reuse");
+      const reusePlan = await buildCoverageReusePlan(supabase, {
+        coverageInputs,
+        candidatesByPage,
+        matchedByPage,
+        existingByPage,
+      });
+      coverageEmitted = reusePlan.results;
+      classifiedDone = reusePlan.hitCount;
+      await reporter.log(
+        `Coverage reuse — ${reusePlan.hitCount} cached, ${reusePlan.missInputs.length} to classify (TTL ${reusePlan.ttlDays}d)`,
+      );
+      await reporter.setProgress(
+        classifiedDone,
+        coverageInputs.length,
+        "clusters",
+        reusePlan.missInputs.length > 0 ? "Classifying uncached coverage" : "Reusing cached coverage",
+      );
+      const freshCoverage = await classifyClustersConcurrently(reusePlan.missInputs, {
         concurrency: 10,
         onResult: (_i, r) => {
+          const originalIndex = reusePlan.missIndexes[_i];
           llmIn += r.tokens.input;
           llmOut += r.tokens.output;
           classifiedDone += 1;
-          void reporter.setProgress(classifiedDone, candidateCount, "clusters");
+          r.cacheKey = reusePlan.cacheKeys[originalIndex];
+          coverageEmitted[originalIndex] = r;
+          void reporter.setProgress(
+            classifiedDone,
+            coverageInputs.length,
+            "clusters",
+            "Classifying coverage per cluster",
+          );
         },
       });
+      for (let i = 0; i < freshCoverage.length; i++) {
+        const originalIndex = reusePlan.missIndexes[i];
+        const result = freshCoverage[i];
+        result.cacheKey = reusePlan.cacheKeys[originalIndex];
+        coverageEmitted[originalIndex] = result;
+      }
       const kindCounts = coverageEmitted.reduce<Record<string, number>>((m, r) => {
         m[r.kind] = (m[r.kind] ?? 0) + 1;
         return m;
@@ -412,8 +489,13 @@ export async function runSyncJob(jobId: number): Promise<void> {
     }
 
     // ── Phase: upsert ─────────────────────────────────────────────────────
-    await reporter.setPhase("upsert");
+    await reporter.setPhase("upsert", {
+      total: candidatesByPage.size,
+      label: "pages",
+      detail: "Writing pages and clusters",
+    });
     const upsertResult = await upsertEverything(supabase, {
+      jobId,
       pages,
       pageMetas,
       candidatesByPage,
@@ -426,6 +508,8 @@ export async function runSyncJob(jobId: number): Promise<void> {
       anchorExternalCanonicalsByCluster,
       cannibalByCluster,
       topicScoresByCluster,
+      onPageProgress: (completed, total) =>
+        reporter.setProgress(completed, total, "pages", "Writing pages and clusters"),
     });
 
     // ── Phase: rank_snapshot (Phase 1D) ───────────────────────────────────
@@ -435,9 +519,15 @@ export async function runSyncJob(jobId: number): Promise<void> {
     // cp_seo_query_findings always reflects only the latest sync, so without
     // this snapshot rank-decline detection is structurally impossible.
     // Also handles 90-day retention pruning.
-    await reporter.setPhase("rank_snapshot");
+    await reporter.setPhase("rank_snapshot", { detail: "Snapshotting rank history" });
     try {
       const snapshotCount = await snapshotRankHistory(supabase);
+      await reporter.setProgress(
+        snapshotCount,
+        snapshotCount,
+        "query rows",
+        "Snapshotting rank history",
+      );
       await reporter.log(`Rank history — snapshotted ${snapshotCount} (page, query) rows`);
     } catch (rankErr) {
       const msg = rankErr instanceof Error ? rankErr.message : String(rankErr);
@@ -450,7 +540,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
     // findings the per-cluster classifier cannot see (fully_ceded_page,
     // undesignated_topic, aio_no_citation, orphan_target). Detection-only,
     // no LLM. Embedding tokens for orphan_target adjacency are counted.
-    await reporter.setPhase("synthesize");
+    await reporter.setPhase("synthesize", { detail: "Synthesizing site-wide insights" });
     let synthesisEmbedTokens = 0;
     try {
       const synthesisResult = await runSiteSynthesis(supabase, jobId);
@@ -650,7 +740,7 @@ async function loadExistingClustersByPage(
   const { data, error } = await supabase
     .from("cp_seo_clusters")
     .select(
-      "id, page, label, current_centroid, original_centroid, is_branded, brand, retailer, product_family, cp_seo_query_findings(query)",
+      "id, page, label, current_centroid, original_centroid, is_branded, brand, retailer, product_family, coverage_kind, coverage_recommendation, coverage_confidence, coverage_model, coverage_prompt_v, coverage_input_digest, coverage_classified_at, start_with_queries, coverage_cache_key, coverage_classified_in_job_id, cp_seo_query_findings(query)",
     )
     .in("page", pages)
     .is("archived_at", null);
@@ -661,6 +751,16 @@ async function loadExistingClustersByPage(
     id: number; page: string; label: string;
     current_centroid: string; original_centroid: string;
     is_branded: boolean; brand: string | null; retailer: string | null; product_family: string | null;
+    coverage_kind: string | null;
+    coverage_recommendation: string | null;
+    coverage_confidence: number | string | null;
+    coverage_model: string | null;
+    coverage_prompt_v: string | null;
+    coverage_input_digest: Record<string, unknown> | null;
+    coverage_classified_at: string | null;
+    start_with_queries: string[] | null;
+    coverage_cache_key: string | null;
+    coverage_classified_in_job_id: number | null;
     cp_seo_query_findings: { query: string }[] | null;
   }>) {
     const ex: ExistingClusterForMatch = {
@@ -672,6 +772,16 @@ async function loadExistingClustersByPage(
       brand: row.brand,
       retailer: row.retailer,
       product_family: row.product_family,
+      coverage_kind: row.coverage_kind,
+      coverage_recommendation: row.coverage_recommendation,
+      coverage_confidence: row.coverage_confidence == null ? null : Number(row.coverage_confidence),
+      coverage_model: row.coverage_model,
+      coverage_prompt_v: row.coverage_prompt_v,
+      coverage_input_digest: row.coverage_input_digest,
+      coverage_classified_at: row.coverage_classified_at,
+      start_with_queries: row.start_with_queries,
+      coverage_cache_key: row.coverage_cache_key,
+      coverage_classified_in_job_id: row.coverage_classified_in_job_id,
       member_queries: new Set((row.cp_seo_query_findings ?? []).map((f) => f.query)),
     };
     const list = byPage.get(row.page) ?? [];
@@ -733,11 +843,229 @@ function summarizeMatches(matchedByPage: Map<string, MatchResult[]>): {
   return { auto, review, new_ };
 }
 
+type CoverageReusePlan = {
+  results: CoverageResult[];
+  cacheKeys: string[];
+  missInputs: CoverageInput[];
+  missIndexes: number[];
+  hitCount: number;
+  ttlDays: number;
+};
+
+async function buildCoverageReusePlan(
+  supabase: SupabaseClient,
+  args: {
+    coverageInputs: CoverageInput[];
+    candidatesByPage: Map<string, PageCandidate[]>;
+    matchedByPage: Map<string, MatchResult[]>;
+    existingByPage: Map<string, ExistingClusterForMatch[]>;
+  },
+): Promise<CoverageReusePlan> {
+  const classifierConfig = getCoverageClassifierConfig();
+  const cacheKeys = args.coverageInputs.map((input) =>
+    makeCoverageCacheKey(input, classifierConfig),
+  );
+  const results: CoverageResult[] = new Array(args.coverageInputs.length);
+  const matchResults = flattenMatchResults(args.candidatesByPage, args.matchedByPage);
+  const existingById = indexExistingClusters(args.existingByPage);
+  const ttlDays = readCoverageReuseTtlDays();
+
+  if (ttlDays <= 0) {
+    return {
+      results,
+      cacheKeys,
+      missInputs: args.coverageInputs,
+      missIndexes: args.coverageInputs.map((_, i) => i),
+      hitCount: 0,
+      ttlDays,
+    };
+  }
+
+  const cutoffMs = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
+  const candidateJobIds = new Set<number>();
+  for (let i = 0; i < args.coverageInputs.length; i++) {
+    const existing = matchedReusableCluster(matchResults[i], existingById);
+    if (existing?.coverage_classified_in_job_id) {
+      candidateJobIds.add(existing.coverage_classified_in_job_id);
+    }
+  }
+  const completedJobIds = await loadCompletedSyncJobIds(supabase, [...candidateJobIds]);
+
+  const missInputs: CoverageInput[] = [];
+  const missIndexes: number[] = [];
+  let hitCount = 0;
+
+  for (let i = 0; i < args.coverageInputs.length; i++) {
+    const existing = matchedReusableCluster(matchResults[i], existingById);
+    const cached = existing
+      ? coverageResultFromReusableCluster({
+          existing,
+          cacheKey: cacheKeys[i],
+          completedJobIds,
+          cutoffMs,
+          classifierConfig,
+        })
+      : null;
+    if (cached) {
+      results[i] = cached;
+      hitCount++;
+    } else {
+      missInputs.push(args.coverageInputs[i]);
+      missIndexes.push(i);
+    }
+  }
+
+  return { results, cacheKeys, missInputs, missIndexes, hitCount, ttlDays };
+}
+
+function flattenMatchResults(
+  candidatesByPage: Map<string, PageCandidate[]>,
+  matchedByPage: Map<string, MatchResult[]>,
+): MatchResult[] {
+  const out: MatchResult[] = [];
+  for (const [page, candidates] of candidatesByPage) {
+    const matches = matchedByPage.get(page) ?? [];
+    for (let i = 0; i < candidates.length; i++) {
+      out.push(matches[i]);
+    }
+  }
+  return out;
+}
+
+function indexExistingClusters(
+  existingByPage: Map<string, ExistingClusterForMatch[]>,
+): Map<number, ExistingClusterForMatch> {
+  const out = new Map<number, ExistingClusterForMatch>();
+  for (const clusters of existingByPage.values()) {
+    for (const cluster of clusters) out.set(cluster.id, cluster);
+  }
+  return out;
+}
+
+function matchedReusableCluster(
+  match: MatchResult | undefined,
+  existingById: Map<number, ExistingClusterForMatch>,
+): ExistingClusterForMatch | null {
+  if (!match || match.decision !== "auto" || match.matched_id == null) return null;
+  return existingById.get(match.matched_id) ?? null;
+}
+
+async function loadCompletedSyncJobIds(
+  supabase: SupabaseClient,
+  jobIds: number[],
+): Promise<Set<number>> {
+  if (jobIds.length === 0) return new Set();
+  const { data, error } = await supabase
+    .from("cp_seo_sync_jobs")
+    .select("id, status, completed_at")
+    .in("id", jobIds);
+  if (error) throw new Error(`load coverage cache job provenance: ${error.message}`);
+  return new Set(
+    ((data ?? []) as Array<{ id: number; status: string; completed_at: string | null }>)
+      .filter((job) => job.status === "completed" && job.completed_at)
+      .map((job) => job.id),
+  );
+}
+
+function coverageResultFromReusableCluster(args: {
+  existing: ExistingClusterForMatch;
+  cacheKey: string;
+  completedJobIds: Set<number>;
+  cutoffMs: number;
+  classifierConfig: ReturnType<typeof getCoverageClassifierConfig>;
+}): CoverageResult | null {
+  const {
+    existing,
+    cacheKey,
+    completedJobIds,
+    cutoffMs,
+    classifierConfig,
+  } = args;
+  const jobId = existing.coverage_classified_in_job_id;
+  const classifiedAt = existing.coverage_classified_at;
+  const classifiedAtMs = classifiedAt ? Date.parse(classifiedAt) : NaN;
+  const confidence = existing.coverage_confidence;
+
+  if (!jobId || !completedJobIds.has(jobId)) return null;
+  if (!classifiedAt || !Number.isFinite(classifiedAtMs) || classifiedAtMs < cutoffMs) return null;
+  if (existing.coverage_cache_key !== cacheKey) return null;
+  if (existing.coverage_prompt_v !== classifierConfig.promptVersion) return null;
+  if (!isCoverageKind(existing.coverage_kind)) return null;
+  if (!existing.coverage_recommendation) return null;
+  if (confidence == null || !Number.isFinite(confidence)) return null;
+
+  const auditSource = (existing.coverage_input_digest ?? {}) as CoverageResult["audit"];
+  const existingGuardrails = Array.isArray(auditSource.guardrails)
+    ? auditSource.guardrails
+    : [];
+  const reuseGuardrail = `coverage reused from completed sync job ${jobId}`;
+  const audit = {
+    ...auditSource,
+    guardrails: existingGuardrails.includes(reuseGuardrail)
+      ? existingGuardrails
+      : [...existingGuardrails, reuseGuardrail],
+  } as CoverageResult["audit"];
+
+  return {
+    kind: existing.coverage_kind,
+    recommendation: existing.coverage_recommendation,
+    confidence,
+    startWith: existing.start_with_queries ?? [],
+    modelId: existing.coverage_model ?? classifierConfig.modelId,
+    promptVersion: existing.coverage_prompt_v ?? classifierConfig.promptVersion,
+    cacheKey,
+    cacheSource: {
+      clusterId: existing.id,
+      jobId,
+      classifiedAt,
+    },
+    audit,
+    tokens: { input: 0, output: 0 },
+  };
+}
+
+function isCoverageKind(value: unknown): value is CoverageKind {
+  return typeof value === "string" && (COVERAGE_KINDS as readonly string[]).includes(value);
+}
+
+function readCoverageReuseTtlDays(): number {
+  const raw = process.env.SEO_COVERAGE_REUSE_TTL_DAYS;
+  if (raw == null || raw.trim() === "") return 7;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 7;
+  return n;
+}
+
+function makeCoverageCacheKey(
+  input: CoverageInput,
+  classifierConfig: ReturnType<typeof getCoverageClassifierConfig>,
+): string {
+  return createHash("sha256")
+    .update(stableStringify({
+      version: "coverage-cache-v1",
+      classifier: classifierConfig,
+      input,
+    }))
+    .digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (value === undefined) return "null";
+  if (typeof value === "number" && !Number.isFinite(value)) return "null";
+  if (value == null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
+}
+
 // ─── Upsert ────────────────────────────────────────────────────────────────
 
 async function upsertEverything(
   supabase: SupabaseClient,
   ctx: {
+    jobId: number;
     pages: SeoPageRow[];
     /**
      * Per-page Storyblok + rendered metadata. Carries the new Phase 1D
@@ -772,6 +1100,7 @@ async function upsertEverything(
      * cp_seo_query_findings so the UI can color-code chips by coverage tier.
      */
     topicScoresByCluster: Map<string, number>[];
+    onPageProgress?: (completed: number, total: number) => Promise<void>;
   },
 ): Promise<{ created: number; matched: number; archived: number; opportunities: number }> {
   const now = new Date().toISOString();
@@ -798,6 +1127,8 @@ async function upsertEverything(
   // 2. For each page, upsert clusters (UPDATE matched, INSERT new, ARCHIVE orphans),
   //    then findings, then opportunities.
   let labelIdx = 0;
+  let pagesDone = 0;
+  const totalPages = ctx.candidatesByPage.size;
   for (const [page, candidates] of ctx.candidatesByPage) {
     const matchResults = ctx.matchedByPage.get(page) ?? [];
     const existing = ctx.existingByPage.get(page) ?? [];
@@ -862,7 +1193,9 @@ async function upsertEverything(
         coverage_model: cov?.modelId ?? null,
         coverage_prompt_v: cov?.promptVersion ?? null,
         coverage_input_digest: coverageInputDigest,
-        coverage_classified_at: cov ? now : null,
+        coverage_classified_at: cov ? (cov.cacheSource?.classifiedAt ?? now) : null,
+        coverage_cache_key: cov?.cacheKey ?? null,
+        coverage_classified_in_job_id: cov ? (cov.cacheSource?.jobId ?? ctx.jobId) : null,
         anchor_queries: anchors,
         anchor_external_canonicals: anchorExternalCanonicals,
         start_with_queries: cov?.startWith ?? [],
@@ -945,8 +1278,12 @@ async function upsertEverything(
           .from("cp_seo_opportunities")
           .update({
             page,
+            query: c.cluster.canonical_query,
+            kind: "secondary",
             kind_text: oppKind,
             score: clusterScore,
+            phrase_in_body: 0,
+            in_heading: false,
             last_seen_at: now,
             archived_at: null,
           })
@@ -989,6 +1326,9 @@ async function upsertEverything(
       await supabase.from("cp_seo_query_findings").update({ archived_at: now }).eq("cluster_id", ex.id);
       archived++;
     }
+
+    pagesDone++;
+    await ctx.onPageProgress?.(pagesDone, totalPages);
   }
 
   // 3. Refresh the open_opportunities counter on cp_seo_pages so the dashboard

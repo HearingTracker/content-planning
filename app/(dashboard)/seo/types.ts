@@ -340,7 +340,7 @@ export type SeoSyncJob = {
   triggered_by: string | null;
   status: SeoSyncJobStatus;
   current_phase: SeoSyncJobPhase | null;
-  phase_progress: { completed: number; total: number; label?: string } | null;
+  phase_progress: { completed: number; total: number; label?: string; detail?: string } | null;
   phase_history: Array<{
     phase: SeoSyncJobPhase;
     started_at: string;

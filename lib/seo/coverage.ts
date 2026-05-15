@@ -176,6 +176,21 @@ function resolveEscalationModelId(primaryModelId: string): string | null {
   return null;
 }
 
+export type CoverageClassifierConfig = {
+  modelId: string;
+  promptVersion: string;
+  escalationModelId: string | null;
+};
+
+export function getCoverageClassifierConfig(): CoverageClassifierConfig {
+  const modelId = resolveModelId();
+  return {
+    modelId,
+    promptVersion: COVERAGE_PROMPT_VERSION,
+    escalationModelId: resolveEscalationModelId(modelId),
+  };
+}
+
 const SYSTEM_PROMPT = `You are an SEO content strategist deciding what an editor should do about a cluster of search queries that a specific page is partially ranking for.
 
 You will be given:
@@ -1490,6 +1505,12 @@ export type CoverageResult = {
   startWith: string[];
   modelId: string;
   promptVersion: string;
+  cacheKey?: string;
+  cacheSource?: {
+    clusterId: number;
+    jobId: number;
+    classifiedAt: string;
+  };
   audit: {
     prompt_version: string;
     page: string;
