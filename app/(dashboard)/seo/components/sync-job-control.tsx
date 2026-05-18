@@ -31,9 +31,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useActiveSyncJob, useSyncJob, useTriggerSyncJob } from "@/hooks/queries";
-import { useCurrentUserRole } from "@/hooks/queries";
+import { useCurrentUser, useCurrentUserRole } from "@/hooks/queries";
 import { cn } from "@/lib/utils";
 import type { SeoSyncJob, SeoSyncJobPhase } from "../types";
+import { canTriggerSeoSyncForEmail } from "../sync-permissions";
 
 const PHASE_META: Record<
   SeoSyncJobPhase,
@@ -53,7 +54,8 @@ const PHASE_META: Record<
 
 export function SyncJobControl() {
   const { data: role } = useCurrentUserRole();
-  const isAdmin = role === "admin";
+  const { data: user } = useCurrentUser();
+  const canTriggerSync = role === "admin" && canTriggerSeoSyncForEmail(user?.email);
 
   // Active-job poll is enabled for both admin and non-admin so editors can
   // see "a sync is running" while the trigger button stays admin-only.
@@ -83,9 +85,9 @@ export function SyncJobControl() {
 
   const isActive = job?.status === "pending" || job?.status === "running";
 
-  // Non-admins see the read-only panel during an active sync (so they know
-  // why the dashboard might shift under them) but never the Refresh button.
-  if (!isAdmin) {
+  // Non-authorized users see the read-only panel during an active sync (so they
+  // know why the dashboard might shift under them) but never the Refresh button.
+  if (!canTriggerSync) {
     if (isActive && job) return <SyncJobPanel job={job} />;
     return null;
   }

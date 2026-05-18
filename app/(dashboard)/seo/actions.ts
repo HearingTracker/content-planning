@@ -14,6 +14,7 @@ import type {
   SeoSynthesisFinding,
   SeoSynthesisKindKey,
 } from "./types";
+import { canTriggerSeoSyncForEmail } from "./sync-permissions";
 
 async function requireEditor(): Promise<string> {
   const role = await getCurrentUserRole();
@@ -1015,6 +1016,9 @@ export async function triggerSyncJob(): Promise<{ jobId: number }> {
   const supabase = await createClient();
   const { data: userResp } = await supabase.auth.getUser();
   const userId = userResp.user?.id ?? null;
+  if (!canTriggerSeoSyncForEmail(userResp.user?.email)) {
+    throw new Error("SEO sync refresh is restricted to abram@hearingtracker.com");
+  }
 
   const { createSyncJob, runSyncJob, getActiveSyncJob, sweepAbandonedSyncJobs } = await import(
     "@/lib/seo/sync-job"
