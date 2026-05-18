@@ -12,6 +12,16 @@
 // shape is what the user explicitly asked for.
 
 import { useEffect, useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   AlertCircle,
@@ -30,7 +40,12 @@ import {
   Wand2,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useActiveSyncJob, useSyncJob, useTriggerSyncJob } from "@/hooks/queries";
+import {
+  useActiveSyncJob,
+  useLatestSuccessfulSyncJob,
+  useSyncJob,
+  useTriggerSyncJob,
+} from "@/hooks/queries";
 import { useCurrentUser, useCurrentUserRole } from "@/hooks/queries";
 import { cn } from "@/lib/utils";
 import type { SeoSyncJob, SeoSyncJobPhase } from "../types";
@@ -60,7 +75,11 @@ export function SyncJobControl() {
   // Active-job poll is enabled for both admin and non-admin so editors can
   // see "a sync is running" while the trigger button stays admin-only.
   const { data: activeJob } = useActiveSyncJob({ enabled: true });
+  const { data: latestSuccessfulJob } = useLatestSuccessfulSyncJob({
+    enabled: canTriggerSync,
+  });
   const [trackedJobId, setTrackedJobId] = useState<number | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const { data: trackedJob } = useSyncJob(trackedJobId);
   const trigger = useTriggerSyncJob();
 
@@ -84,6 +103,18 @@ export function SyncJobControl() {
   }, [trackedJob]);
 
   const isActive = job?.status === "pending" || job?.status === "running";
+  const startSync = () => {
+    trigger.mutate(undefined, {
+      onSuccess: ({ jobId }) => {
+        setConfirmOpen(false);
+        setTrackedJobId(jobId);
+        toast(`Sync started — job #${jobId}`);
+      },
+      onError: (err) => {
+        toast.error(`Failed to start sync: ${(err as Error).message}`);
+      },
+    });
+  };
 
   // Non-authorized users see the read-only panel during an active sync (so they
   // know why the dashboard might shift under them) but never the Refresh button.
@@ -94,29 +125,103 @@ export function SyncJobControl() {
 
   if (!isActive) {
     return (
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={trigger.isPending}
-        onClick={() => {
-          trigger.mutate(undefined, {
-            onSuccess: ({ jobId }) => {
-              setTrackedJobId(jobId);
-              toast(`Sync started — job #${jobId}`);
-            },
-            onError: (err) => {
-              toast.error(`Failed to start sync: ${(err as Error).message}`);
-            },
-          });
-        }}
-      >
-        <RefreshCw className={cn("h-4 w-4", trigger.isPending && "animate-spin")} />
-        {trigger.isPending ? "Starting…" : "Refresh now"}
-      </Button>
+      <div className="relative flex shrink-0 flex-col items-end pb-5">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={trigger.isPending}
+          onClick={() => setConfirmOpen(true)}
+        >
+          <RefreshCw className={cn("h-4 w-4", trigger.isPending && "animate-spin")} />
+          {trigger.isPending ? "Starting…" : "Refresh now"}
+        </Button>
+        <ConfirmRefreshDialog
+          open={confirmOpen}
+          onOpenChange={setConfirmOpen}
+          lastSuccessfulJob={latestSuccessfulJob}
+          pending={trigger.isPending}
+          onConfirm={startSync}
+        />
+        <LastSuccessfulSync job={latestSuccessfulJob} floating />
+      </div>
     );
   }
 
-  return <SyncJobPanel job={job} />;
+  return (
+    <div className="flex w-full flex-col items-start gap-1 sm:w-[340px] sm:items-end">
+      <SyncJobPanel job={job} />
+      <LastSuccessfulSync job={latestSuccessfulJob} />
+    </div>
+  );
+}
+
+function ConfirmRefreshDialog({
+  open,
+  onOpenChange,
+  lastSuccessfulJob,
+  pending,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  lastSuccessfulJob: SeoSyncJob | null | undefined;
+  pending: boolean;
+  onConfirm: () => void;
+}) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Run SEO sync?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This starts the full SEO refresh now. It can take several minutes and may use
+            paid API credits.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="rounded-md border bg-zinc-50 p-3 text-sm">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Current status</span>
+            <span className="font-medium text-foreground">No sync running</span>
+          </div>
+          <div className="mt-2 flex items-start justify-between gap-3">
+            <span className="text-muted-foreground">Last successful sync</span>
+            <span className="max-w-[260px] text-right text-foreground">
+              {formatLastSuccessfulSync(lastSuccessfulJob)}
+            </span>
+          </div>
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={onConfirm} disabled={pending}>
+            {pending ? "Starting..." : "Run sync"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function LastSuccessfulSync({
+  job,
+  floating = false,
+}: {
+  job: SeoSyncJob | null | undefined;
+  floating?: boolean;
+}) {
+  if (!job?.completed_at) return null;
+
+  return (
+    <div
+      className={cn(
+        "text-muted-foreground text-[11px] leading-tight",
+        floating
+          ? "absolute right-0 top-full mt-1 w-[220px] text-right"
+          : "max-w-full text-left sm:text-right",
+      )}
+    >
+      Last sync: <span className="tabular-nums">{formatCompactSyncTimestamp(job.completed_at)}</span>
+    </div>
+  );
 }
 
 function SyncJobPanel({ job }: { job: SeoSyncJob }) {
@@ -250,6 +355,33 @@ function formatElapsed(ms: number): string {
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
   return `${m}m ${s.toString().padStart(2, "0")}s`;
+}
+
+function formatSyncTimestamp(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function formatCompactSyncTimestamp(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatLastSuccessfulSync(job: SeoSyncJob | null | undefined): string {
+  if (job === undefined) return "Checking...";
+  if (!job?.completed_at) return "No completed sync found";
+  const clusters = (job.clusters_created ?? 0) + (job.clusters_matched ?? 0);
+  const stats = [
+    job.pages_processed != null ? `${job.pages_processed.toLocaleString()} pages` : null,
+    clusters > 0 ? `${clusters.toLocaleString()} clusters` : null,
+  ].filter(Boolean);
+  return [formatSyncTimestamp(job.completed_at), ...stats].join(" · ");
 }
 
 function clamp(value: number, min: number, max: number): number {

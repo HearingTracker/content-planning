@@ -22,9 +22,9 @@ export default function SeoPage() {
           queries you can fix together. We flag the clusters where small edits could recover
           the most missed clicks; click any page for its per-cluster breakdown.
         </p>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <Button size="sm" className="h-8 gap-1.5" onClick={() => setTaskDialogOpen(true)}>
-            <Plus className="h-3.5 w-3.5" />
+        <div className="flex shrink-0 flex-wrap items-start gap-2">
+          <Button size="sm" onClick={() => setTaskDialogOpen(true)}>
+            <Plus />
             Add manual task
           </Button>
           <ManualSeoTaskDialog

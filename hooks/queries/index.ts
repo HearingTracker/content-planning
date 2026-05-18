@@ -32,5 +32,6 @@ export {
   useConvertOpportunityToContentItem,
   useTriggerSyncJob,
   useActiveSyncJob,
+  useLatestSuccessfulSyncJob,
   useSyncJob,
 } from "./use-seo";

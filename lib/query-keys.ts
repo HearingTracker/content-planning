@@ -45,5 +45,7 @@ export const queryKeys = {
       [...queryKeys.seo.all, "synthesis", "all", kind ?? "any"] as const,
     activeSyncJob: () => [...queryKeys.seo.all, "syncJob", "active"] as const,
     syncJob: (id: number) => [...queryKeys.seo.all, "syncJob", id] as const,
+    latestSuccessfulSyncJob: () =>
+      [...queryKeys.seo.all, "syncJob", "latestSuccessful"] as const,
   },
 } as const;

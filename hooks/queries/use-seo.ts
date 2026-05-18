@@ -16,6 +16,7 @@ import {
   updateOpportunityNotes,
   triggerSyncJob,
   getActiveSyncJob,
+  getLatestSuccessfulSyncJob,
   getSyncJob,
   getSynthesisFindingsForPage,
   getSynthesisFindings,
@@ -209,6 +210,15 @@ export function useActiveSyncJob(opts: { enabled?: boolean } = {}) {
   });
 }
 
+export function useLatestSuccessfulSyncJob(opts: { enabled?: boolean } = {}) {
+  return useQuery<SeoSyncJob | null>({
+    queryKey: queryKeys.seo.latestSuccessfulSyncJob(),
+    queryFn: () => getLatestSuccessfulSyncJob(),
+    enabled: opts.enabled ?? true,
+    staleTime: 30_000,
+  });
+}
+
 /**
  * Polls a specific sync job. Stops polling once the job terminates and
  * invalidates SEO queries so the dashboard picks up new clusters.
@@ -224,6 +234,7 @@ export function useSyncJob(jobId: number | null) {
       // table + drawer pick up the new clusters automatically.
       if (job?.status === "completed" || job?.status === "failed") {
         qc.invalidateQueries({ queryKey: queryKeys.seo.pages() });
+        qc.invalidateQueries({ queryKey: queryKeys.seo.latestSuccessfulSyncJob() });
       }
       return job;
     },

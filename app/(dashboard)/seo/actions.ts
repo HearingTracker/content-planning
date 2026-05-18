@@ -1122,6 +1122,20 @@ export async function getRecentSyncJobs(limit = 10): Promise<SeoSyncJob[]> {
   return (data ?? []) as SeoSyncJob[];
 }
 
+export async function getLatestSuccessfulSyncJob(): Promise<SeoSyncJob | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("cp_seo_sync_jobs")
+    .select("*")
+    .eq("status", "completed")
+    .not("completed_at", "is", null)
+    .order("completed_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as SeoSyncJob | null) ?? null;
+}
+
 // ─── Admin: cluster matching review (Phase 1A.5) ───────────────────────────
 //
 // Rows are surfaced for inspection when the cluster matcher chose 'review'
