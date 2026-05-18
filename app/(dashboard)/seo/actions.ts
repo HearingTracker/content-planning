@@ -1041,6 +1041,28 @@ export async function triggerSyncJob(): Promise<{ jobId: number }> {
   return { jobId };
 }
 
+const PENDING_SYNC_JOB_STALE_MS = 5 * 60 * 1000;
+const RUNNING_SYNC_JOB_STALE_MS = 10 * 60 * 1000;
+
+function isAbandonedSyncJob(job: SeoSyncJob | null): boolean {
+  if (!job) return false;
+  const now = Date.now();
+  if (job.status === "pending") {
+    return now - Date.parse(job.triggered_at) > PENDING_SYNC_JOB_STALE_MS;
+  }
+  if (job.status === "running") {
+    return now - Date.parse(job.updated_at) > RUNNING_SYNC_JOB_STALE_MS;
+  }
+  return false;
+}
+
+async function sweepIfAbandonedSyncJob(job: SeoSyncJob | null): Promise<boolean> {
+  if (!isAbandonedSyncJob(job)) return false;
+  const { sweepAbandonedSyncJobs } = await import("@/lib/seo/sync-job");
+  await sweepAbandonedSyncJobs();
+  return true;
+}
+
 export async function getActiveSyncJob(): Promise<SeoSyncJob | null> {
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -1051,7 +1073,18 @@ export async function getActiveSyncJob(): Promise<SeoSyncJob | null> {
     .limit(1)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  return (data as SeoSyncJob | null) ?? null;
+  const job = (data as SeoSyncJob | null) ?? null;
+  if (!(await sweepIfAbandonedSyncJob(job))) return job;
+
+  const { data: sweptData, error: sweptError } = await supabase
+    .from("cp_seo_sync_jobs")
+    .select("*")
+    .in("status", ["pending", "running"])
+    .order("triggered_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (sweptError) throw new Error(sweptError.message);
+  return (sweptData as SeoSyncJob | null) ?? null;
 }
 
 export async function getSyncJob(id: number): Promise<SeoSyncJob | null> {
@@ -1062,7 +1095,16 @@ export async function getSyncJob(id: number): Promise<SeoSyncJob | null> {
     .eq("id", id)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  return (data as SeoSyncJob | null) ?? null;
+  const job = (data as SeoSyncJob | null) ?? null;
+  if (!(await sweepIfAbandonedSyncJob(job))) return job;
+
+  const { data: sweptData, error: sweptError } = await supabase
+    .from("cp_seo_sync_jobs")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (sweptError) throw new Error(sweptError.message);
+  return (sweptData as SeoSyncJob | null) ?? null;
 }
 
 export async function getRecentSyncJobs(limit = 10): Promise<SeoSyncJob[]> {

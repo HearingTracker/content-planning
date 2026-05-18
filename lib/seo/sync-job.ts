@@ -151,6 +151,7 @@ export async function createSyncJob(opts: {
   triggeredBy?: string;
 }): Promise<{ jobId: number }> {
   const supabase = getServiceClient();
+  await sweepAbandonedJobs(supabase);
   const { data, error } = await supabase
     .from("cp_seo_sync_jobs")
     .insert({
@@ -204,6 +205,7 @@ export async function getActiveSyncJob(): Promise<{
   triggered_at: string;
 } | null> {
   const supabase = getServiceClient();
+  await sweepAbandonedJobs(supabase);
   const { data, error } = await supabase
     .from("cp_seo_sync_jobs")
     .select("id, status, current_phase, triggered_at")

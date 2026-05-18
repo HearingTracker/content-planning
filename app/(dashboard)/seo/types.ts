@@ -391,6 +391,7 @@ export type SeoSyncJob = {
   estimated_cost_usd: number;
   triggered_at: string;
   started_at: string | null;
+  updated_at: string;
   completed_at: string | null;
   failed_at: string | null;
   error_message: string | null;
