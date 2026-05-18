@@ -17,6 +17,7 @@
 
 import { createHash } from "node:crypto";
 import { type SupabaseClient } from "@supabase/supabase-js";
+import { AUTHORITY_DOMAIN_SUFFIXES, isAuthorityDomain } from "./authority";
 import { detectBrand } from "./brand-map";
 import { embedQueries } from "./embed";
 import { normalizeUrlForMatch } from "./serp-data";
@@ -69,43 +70,11 @@ const DEFAULT_THRESHOLDS = {
   internalLink_minSv: numEnv("SEO_SYNTHESIS_LINK_GAP_MIN_SV", 1000),
 };
 
-/**
- * Curated authority-domain list for `authority_capped_serp`. Match by suffix
- * so subdomains count (`health.harvard.edu` matches `edu`,
- * `newsnetwork.mayoclinic.org` matches `mayoclinic.org`). Updates require a
- * code change with PR review — domains drift slowly and we want visibility
- * on changes. The full list is also recorded in each finding's evidence so
- * historical findings remain interpretable when the list moves.
- */
-const AUTHORITY_DOMAIN_SUFFIXES = [
-  // Government / academic
-  "gov",
-  "edu",
-  // Major medical authorities
-  "mayoclinic.org",
-  "nih.gov",
-  "hopkinsmedicine.org",
-  "harvard.edu",
-  "clevelandclinic.org",
-  // Mainstream health publishers
-  "webmd.com",
-  "healthline.com",
-  "medlineplus.gov",
-  // Major consumer / trade press
-  "consumerreports.org",
-  "forbes.com",
-  "nytimes.com",
-  "wsj.com",
-  // Hearing-vertical non-profits and authoritative orgs
-  "asha.org",       // American Speech-Language-Hearing Association
-  "ncoa.org",       // National Council on Aging
-  "hearingloss.org",// Hearing Loss Association of America
-];
-
-function isAuthorityDomain(domain: string): boolean {
-  const d = domain.toLowerCase();
-  return AUTHORITY_DOMAIN_SUFFIXES.some((s) => d === s || d.endsWith(`.${s}`));
-}
+// Authority-domain helpers live in lib/seo/authority.ts so the coverage
+// classifier can share the same suffix list without depending on synthesis.
+// The full list is recorded in each finding's evidence below (see
+// `domain_list_snapshot`) so historical findings remain interpretable when
+// the list moves.
 
 function numEnv(key: string, fallback: number): number {
   const v = process.env[key];

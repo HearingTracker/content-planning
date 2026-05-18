@@ -33,9 +33,12 @@ export const queryKeys = {
   seo: {
     all: ["seo"] as const,
     pages: () => [...queryKeys.seo.all, "pages"] as const,
+    page: (page: string) => [...queryKeys.seo.all, "page", page] as const,
     manualQueue: () => [...queryKeys.seo.all, "manualQueue"] as const,
     opportunities: (page: string) =>
       [...queryKeys.seo.all, "opportunities", page] as const,
+    opportunityById: (id: number) =>
+      [...queryKeys.seo.all, "opportunity", id] as const,
     synthesisForPage: (page: string) =>
       [...queryKeys.seo.all, "synthesis", "page", page] as const,
     synthesisAll: (kind?: string) =>

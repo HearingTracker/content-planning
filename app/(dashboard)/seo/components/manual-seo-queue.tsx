@@ -1,6 +1,7 @@
 "use client";
 
-import { Calendar, ExternalLink, FileText, Newspaper, RefreshCw, RotateCcw } from "lucide-react";
+import { Calendar, ExternalLink, FileText, Newspaper, Plus, RefreshCw, RotateCcw } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import {
@@ -63,7 +64,7 @@ const STATUS_LABELS: Record<SeoOppStatus, string> = {
   dismissed: "Dismissed",
 };
 
-export function ManualSeoQueue() {
+export function ManualSeoQueue({ onAddTask }: { onAddTask?: () => void } = {}) {
   const { data, isLoading } = useManualSeoQueueItems();
   const items = data ?? [];
 
@@ -76,7 +77,35 @@ export function ManualSeoQueue() {
     );
   }
 
-  if (items.length === 0) return null;
+  // A12: empty state is now visible (was `return null`) so the queue's
+  // existence is discoverable. Falls back to nothing if no trigger was
+  // provided — preserves the old behavior when the parent doesn't wire it.
+  if (items.length === 0) {
+    if (!onAddTask) return null;
+    return (
+      <section className="rounded-lg border border-dashed bg-card/40 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-foreground">Manual SEO queue</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              No manual tasks yet. Add an article update, event, or human override the
+              automated sync should not infer on its own.
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 shrink-0"
+            onClick={onAddTask}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add manual task
+          </Button>
+        </div>
+      </section>
+    );
+  }
 
   const visible = items.slice(0, 6);
   const hidden = items.length - visible.length;
@@ -86,7 +115,7 @@ export function ManualSeoQueue() {
       <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
         <div>
           <h2 className="text-sm font-semibold text-foreground">Manual SEO queue</h2>
-          <p className="mt-0.5 text-[12px] text-muted-foreground">
+          <p className="mt-0.5 text-xs text-muted-foreground">
             {items.length} editor-added task{items.length === 1 ? "" : "s"}
           </p>
         </div>
@@ -209,7 +238,7 @@ function ManualTaskStatusSelect({ id, value }: { id: number; value: SeoOppStatus
       }}
       disabled={mutation.isPending}
     >
-      <SelectTrigger className="h-7 w-[130px] text-xs">
+      <SelectTrigger className="h-7 min-w-[110px] text-xs">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>

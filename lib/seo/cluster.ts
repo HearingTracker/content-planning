@@ -195,6 +195,8 @@ export type ExistingClusterForMatch = {
   start_with_queries?: string[] | null;
   coverage_cache_key?: string | null;
   coverage_classified_in_job_id?: number | null;
+  faq_gaps?: Array<{ question: string; covered: boolean; volume: number | null }> | null;
+  competitor_realism?: { verdict: string; reasoning: string } | null;
 };
 
 export type CandidateForMatch = {

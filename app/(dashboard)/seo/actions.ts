@@ -33,6 +33,17 @@ export async function getSeoPages(): Promise<SeoPage[]> {
   return (data ?? []) as SeoPage[];
 }
 
+export async function getSeoPage(page: string): Promise<SeoPage | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("cp_seo_pages_with_stats")
+    .select("*")
+    .eq("page", page)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as SeoPage | null) ?? null;
+}
+
 const TASK_TYPES = new Set<SeoManualQueueInput["task_type"]>([
   "article_update",
   "update_event",
@@ -252,6 +263,78 @@ function parsePrioritizationAudit(
   return obj as SeoOpportunity["prioritization"];
 }
 
+function deriveSeoActionability(args: {
+  rawActionability: unknown;
+  coverageConfidence: number | string | null;
+  kind: SeoOpportunity["kind"] | null;
+}): SeoOpportunity["actionability"] {
+  const { rawActionability, coverageConfidence, kind } = args;
+  if (kind === "needs_review") {
+    return "review";
+  }
+  if (
+    rawActionability === "ready" ||
+    rawActionability === "review" ||
+    rawActionability === "monitor" ||
+    rawActionability === "blocked"
+  ) {
+    return rawActionability;
+  }
+  return coverageConfidence != null && Number(coverageConfidence) < 0.6
+    ? "review"
+    : kind === "coverage_strong"
+      ? "monitor"
+      : kind === "cede" || kind === "wrong_page"
+        ? "blocked"
+        : "ready";
+}
+
+async function findLinkedContentItemId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  opportunityId: number,
+): Promise<{ id: number | null; error?: string }> {
+  const { data, error } = await supabase
+    .from("cp_seo_manual_queue_items")
+    .select("linked_content_item_id")
+    .eq("linked_opportunity_id", opportunityId)
+    .is("archived_at", null)
+    .not("linked_content_item_id", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (error) return { id: null, error: error.message };
+  const raw = data?.[0]?.linked_content_item_id;
+  const id = typeof raw === "number" ? raw : Number(raw);
+  return { id: Number.isFinite(id) ? id : null };
+}
+
+async function getLinkedContentItemIds(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  opportunityIds: number[],
+): Promise<Map<number, number>> {
+  if (opportunityIds.length === 0) return new Map();
+
+  const { data, error } = await supabase
+    .from("cp_seo_manual_queue_items")
+    .select("linked_opportunity_id, linked_content_item_id")
+    .in("linked_opportunity_id", opportunityIds)
+    .is("archived_at", null)
+    .not("linked_content_item_id", "is", null)
+    .order("created_at", { ascending: false });
+  if (error) throw new Error(error.message);
+
+  const byOpportunity = new Map<number, number>();
+  for (const row of (data ?? []) as Array<{
+    linked_opportunity_id: number | null;
+    linked_content_item_id: number | null;
+  }>) {
+    if (row.linked_opportunity_id == null || row.linked_content_item_id == null) continue;
+    if (!byOpportunity.has(row.linked_opportunity_id)) {
+      byOpportunity.set(row.linked_opportunity_id, row.linked_content_item_id);
+    }
+  }
+  return byOpportunity;
+}
+
 export async function getManualSeoQueueItems(): Promise<SeoManualQueueItem[]> {
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -295,6 +378,383 @@ export async function updateManualSeoQueueItemStatus(
   revalidatePath("/seo");
 }
 
+/**
+ * Convert an SEO opportunity into an editorial content item.
+ *
+ * Three writes happen atomically from the user's POV (though Supabase
+ * doesn't give us a transaction wrapper without RPCs — we run them in order
+ * and roll back manually on failure):
+ *   1. Insert a new cp_content row with the cluster label as title and an
+ *      seo_metadata JSON pocket carrying the opportunity context the brief
+ *      writer needs (recommendation, faq_gaps, top anchors, canonical query).
+ *   2. Insert a cp_seo_manual_queue_items row linking both the opportunity
+ *      and the new content item — the manual queue is the existing
+ *      bridge surface between /seo and /content.
+ *   3. Flip the opportunity status to "in_progress".
+ */
+export async function convertOpportunityToContentItem(
+  oppId: number,
+  opts: { assignedAuthorId?: string | null } = {},
+): Promise<{ success: boolean; contentItemId?: number; error?: string }> {
+  await requireEditor();
+  const supabase = await createClient();
+
+  // 1. Load the opportunity + the joined cluster fields we need for the
+  //    title / metadata pocket. We re-fetch instead of taking a snapshot
+  //    from the caller so the conversion always uses fresh data even if
+  //    the drilldown was stale.
+  const { data: oppRow, error: oppErr } = await supabase
+    .from("cp_seo_opportunities")
+    .select(
+      `
+      id, page, status, kind_text,
+      cluster:cp_seo_clusters!inner (
+        label, canonical_query, coverage_recommendation, coverage_confidence,
+        coverage_input_digest, start_with_queries, faq_gaps, competitor_realism
+      )
+    `,
+    )
+    .eq("id", oppId)
+    .is("archived_at", null)
+    .maybeSingle();
+  if (oppErr) return { success: false, error: oppErr.message };
+  if (!oppRow) return { success: false, error: "opportunity not found" };
+
+  const opp = oppRow as unknown as {
+    id: number;
+    page: string;
+    status: SeoOppStatus;
+    kind_text: SeoOpportunity["kind"] | null;
+    cluster: {
+      label: string;
+      canonical_query: string;
+      coverage_recommendation: string | null;
+      coverage_confidence: number | string | null;
+      coverage_input_digest: Record<string, unknown> | null;
+      start_with_queries: string[] | null;
+      faq_gaps: Array<{ question: string; covered: boolean; volume: number | null }> | null;
+      competitor_realism: { verdict: string; reasoning: string } | null;
+    };
+  };
+
+  const existingLink = await findLinkedContentItemId(supabase, opp.id);
+  if (existingLink.error) return { success: false, error: existingLink.error };
+  if (existingLink.id != null) {
+    return { success: true, contentItemId: existingLink.id };
+  }
+
+  if (opp.status === "done") {
+    return {
+      success: false,
+      error: "opportunity is already done; reopen it before sending to editorial",
+    };
+  }
+
+  const digest = asObject(opp.cluster.coverage_input_digest);
+  const actionability = deriveSeoActionability({
+    rawActionability: digest?.editor_actionability,
+    coverageConfidence: opp.cluster.coverage_confidence,
+    kind: opp.kind_text ?? "needs_review",
+  });
+  if (actionability !== "ready") {
+    return {
+      success: false,
+      error: `opportunity is ${actionability}; only ready opportunities can be sent to editorial`,
+    };
+  }
+
+  // 2. Create the content item. seo_metadata only needs the pointer back to
+  //    the opportunity — the SEO tab in the content modal fetches the full
+  //    synthesis live, which keeps the brief honest if the cluster is
+  //    re-synthesized. page + canonical_query are breadcrumb fallbacks for
+  //    when the live fetch fails (opportunity deleted, etc).
+  const startAnchors = (opp.cluster.start_with_queries ?? [])
+    .filter((s): s is string => typeof s === "string");
+  const title = `${opp.cluster.label} — ${opp.page}`;
+  const { createContentItem } = await import("../content/actions");
+  const created = await createContentItem({
+    title,
+    description: opp.cluster.coverage_recommendation ?? null,
+    priority: "medium",
+    primary_keyword: opp.cluster.canonical_query,
+    secondary_keywords: startAnchors,
+    seo_metadata: {
+      source: "seo_opportunity",
+      opportunity_id: opp.id,
+      page: opp.page,
+      canonical_query: opp.cluster.canonical_query,
+    },
+  });
+  if (!created.success || created.id == null) {
+    return { success: false, error: created.error ?? "createContentItem failed" };
+  }
+
+  // 3. Link via the manual queue. linked_content_item_id is the new column
+  //    from this phase's migration; linked_opportunity_id was already there.
+  const { data: userResp } = await supabase.auth.getUser();
+  const summary = opp.cluster.coverage_recommendation
+    ? opp.cluster.coverage_recommendation.slice(0, 800)
+    : `Convert SEO opportunity for cluster "${opp.cluster.label}".`;
+  const { error: queueErr } = await supabase
+    .from("cp_seo_manual_queue_items")
+    .insert({
+      task_type: "article_update",
+      page: opp.page,
+      target_title: title,
+      summary,
+      evidence: null,
+      source_url: null,
+      event_date: null,
+      priority: "medium",
+      status: "in_progress",
+      linked_opportunity_id: opp.id,
+      linked_content_item_id: created.id,
+      created_by: userResp.user?.id ?? null,
+    });
+  if (queueErr) {
+    // Roll back the content item so we don't leave an orphaned row in the
+    // editorial board. Best-effort — if delete fails, the cleanup surface
+    // is the /content board anyway.
+    await supabase.from("cp_content").delete().eq("id", created.id);
+    const linkedAfterRace = await findLinkedContentItemId(supabase, opp.id);
+    if (queueErr.code === "23505" && linkedAfterRace.id != null) {
+      return { success: true, contentItemId: linkedAfterRace.id };
+    }
+    return { success: false, error: queueErr.message };
+  }
+
+  // 4. Mark the opportunity in progress so dashboards reflect that this
+  //    cluster is being worked on. Manual "in progress" status does not mean
+  //    an editorial item already exists, so conversion is still allowed above.
+  if (opp.status === "open" || opp.status === "dismissed" || opp.status === "in_progress") {
+    const { error: updErr } = await supabase
+      .from("cp_seo_opportunities")
+      .update({ status: "in_progress", assigned_to: opts.assignedAuthorId ?? null })
+      .eq("id", opp.id);
+    if (updErr) {
+      // Don't roll back — the conversion succeeded; the status flip is
+      // cosmetic. Surface the warning via the error field.
+      return { success: true, contentItemId: created.id, error: `status update failed: ${updErr.message}` };
+    }
+  }
+
+  revalidatePath("/seo");
+  revalidatePath("/content");
+  return { success: true, contentItemId: created.id };
+}
+
+// Shared SELECT string for cluster-joined opportunity reads. Used by the
+// page-scoped list and the by-id single-row fetcher (SEO tab in the content
+// modal). cluster.updated_at is fetched even though the list view doesn't
+// surface it — the single-row fetcher uses it for the staleness pill, and
+// the cost of one extra column on the list query is negligible.
+const OPPORTUNITY_CLUSTER_SELECT = `
+  id, page, cluster_id, kind_text, score, status, assigned_to, notes,
+  first_seen_at, last_seen_at, archived_at,
+  cluster:cp_seo_clusters!inner (
+    updated_at, label, canonical_query, is_branded, brand, retailer,
+    product_family, dataforseo_intent_prior, member_count, total_impressions,
+    total_volume, total_missed_clicks, weighted_ctr_pct, expected_ctr_pct,
+    avg_position, min_kd, max_kd, match_decision, match_score,
+    coverage_recommendation, coverage_confidence, coverage_input_digest,
+    anchor_queries, start_with_queries, anchor_external_canonicals,
+    cannibal_overlap, external_gap_signals, faq_gaps, competitor_realism,
+    cp_seo_query_findings ( query, topic_coverage_score )
+  )
+`;
+
+type OpportunityRow = {
+  id: number;
+  page: string;
+  cluster_id: number;
+  kind_text: SeoOpportunity["kind"];
+  score: number;
+  status: SeoOpportunity["status"];
+  assigned_to: string | null;
+  notes: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  archived_at: string | null;
+  cluster: {
+    updated_at: string;
+    label: string;
+    canonical_query: string;
+    is_branded: boolean;
+    brand: string | null;
+    retailer: string | null;
+    product_family: string | null;
+    dataforseo_intent_prior: string | null;
+    member_count: number;
+    total_impressions: number;
+    total_volume: number;
+    total_missed_clicks: number;
+    weighted_ctr_pct: number | null;
+    expected_ctr_pct: number | null;
+    avg_position: number | null;
+    min_kd: number | null;
+    max_kd: number | null;
+    match_decision: SeoOpportunity["match_decision"];
+    match_score: number | null;
+    coverage_recommendation: string | null;
+    coverage_confidence: number | string | null;
+    coverage_input_digest: ({
+      editor_actionability?: string;
+      guardrails?: unknown;
+    } & Record<string, unknown>) | null;
+    anchor_queries: { query: string; score: number }[] | null;
+    start_with_queries: string[] | null;
+    anchor_external_canonicals:
+      | Array<{ query: string; url: string; position: number }>
+      | null;
+    // Legacy shape: { query: string[] } — paths only.
+    // Current shape: { query: { url: string; wins?: [...] }[] } — SERP-verified
+    // competitors with annotations. Reader below tolerates both for rows
+    // classified before prompt v7.
+    cannibal_overlap:
+      | Record<string, Array<string | { url: string }>>
+      | null;
+    external_gap_signals:
+      | {
+          paa?: unknown;
+          related_searches?: unknown;
+          question_keywords?: unknown;
+          serp_top_organic?: unknown;
+        }
+      | null;
+    faq_gaps:
+      | Array<{
+          question?: unknown;
+          covered?: unknown;
+          volume?: unknown;
+        }>
+      | null;
+    competitor_realism:
+      | { verdict?: unknown; reasoning?: unknown }
+      | null;
+    cp_seo_query_findings:
+      | { query: string; topic_coverage_score: number | string | null }[]
+      | null;
+  };
+};
+
+function mapOpportunityRow(
+  row: OpportunityRow,
+  linkedContentItemId: number | null = null,
+): SeoOpportunity {
+  const anchors = Array.isArray(row.cluster.anchor_queries)
+    ? row.cluster.anchor_queries.map((a) => a.query).filter((q): q is string => typeof q === "string")
+    : [];
+  // start_with_queries is the LLM-curated highlight subset, persisted
+  // NOT NULL DEFAULT '[]'. An empty array is a positive "nothing to
+  // attack" signal (correct for coverage_strong, wrong_page, cede, and
+  // review-gated rows whose only AIO anchors carry external canonicals) —
+  // do NOT fall back to highlighting every anchor in that case.
+  const startWith = Array.isArray(row.cluster.start_with_queries)
+    ? row.cluster.start_with_queries.filter((q): q is string => typeof q === "string")
+    : [];
+  const externalCanonicals: SeoOpportunity["external_canonicals"] = {};
+  if (Array.isArray(row.cluster.anchor_external_canonicals)) {
+    for (const e of row.cluster.anchor_external_canonicals) {
+      if (e && typeof e.query === "string" && typeof e.url === "string") {
+        externalCanonicals[e.query] = {
+          url: e.url,
+          position: typeof e.position === "number" ? e.position : null,
+        };
+      }
+    }
+  }
+  const cannibalSet = new Set<string>();
+  if (row.cluster.cannibal_overlap && typeof row.cluster.cannibal_overlap === "object") {
+    for (const entries of Object.values(row.cluster.cannibal_overlap)) {
+      for (const entry of entries ?? []) {
+        if (typeof entry === "string") cannibalSet.add(entry);
+        else if (entry && typeof entry === "object" && typeof entry.url === "string") {
+          cannibalSet.add(entry.url);
+        }
+      }
+    }
+  }
+  const digest = row.cluster.coverage_input_digest;
+  const rawGuardrails = digest?.guardrails;
+  const guardrails = Array.isArray(rawGuardrails)
+    ? rawGuardrails.filter((g): g is string => typeof g === "string")
+    : [];
+  const actionability = deriveSeoActionability({
+    rawActionability: digest?.editor_actionability,
+    coverageConfidence: row.cluster.coverage_confidence,
+    kind: row.kind_text,
+  });
+  return {
+    id: row.id,
+    page: row.page,
+    cluster_id: row.cluster_id,
+    kind: row.kind_text ?? "needs_review",
+    score: row.score,
+    status: row.status,
+    assigned_to: row.assigned_to,
+    linked_content_item_id: linkedContentItemId,
+    notes: row.notes,
+    first_seen_at: row.first_seen_at,
+    last_seen_at: row.last_seen_at,
+    archived_at: row.archived_at,
+    cluster_label: row.cluster.label,
+    canonical_query: row.cluster.canonical_query,
+    is_branded: row.cluster.is_branded,
+    brand: row.cluster.brand,
+    retailer: row.cluster.retailer,
+    product_family: row.cluster.product_family,
+    dataforseo_intent_prior: row.cluster.dataforseo_intent_prior,
+    page_content_type: asSeoPageContentType(digest?.page_content_type),
+    page_content_type_signals: asStringArray(digest?.page_content_type_signals),
+    member_count: row.cluster.member_count,
+    total_impressions: row.cluster.total_impressions,
+    total_volume: row.cluster.total_volume,
+    total_missed_clicks: row.cluster.total_missed_clicks,
+    weighted_ctr_pct: row.cluster.weighted_ctr_pct,
+    expected_ctr_pct: row.cluster.expected_ctr_pct,
+    avg_position: row.cluster.avg_position,
+    min_kd: row.cluster.min_kd,
+    max_kd: row.cluster.max_kd,
+    match_decision: row.cluster.match_decision,
+    match_score: row.cluster.match_score,
+    member_queries: (row.cluster.cp_seo_query_findings ?? []).map((f) => f.query),
+    topic_coverage_by_query: Object.fromEntries(
+      (row.cluster.cp_seo_query_findings ?? [])
+        .map((f) => [
+          f.query,
+          f.topic_coverage_score == null ? null : Number(f.topic_coverage_score),
+        ] as const)
+        .filter(([, v]) => v == null || (typeof v === "number" && Number.isFinite(v))),
+    ),
+    recommendation: row.cluster.coverage_recommendation,
+    confidence: row.cluster.coverage_confidence != null ? Number(row.cluster.coverage_confidence) : null,
+    actionability,
+    guardrails,
+    anchor_queries: anchors,
+    start_with_queries: startWith,
+    external_canonicals: externalCanonicals,
+    cannibal_pages: [...cannibalSet].sort(),
+    standalone_article: parseStandaloneArticleAudit(digest?.standalone_article),
+    recommendation_audit: parseRecommendationAudit(digest?.recommendation_audit),
+    editor_gap_checklist: parseEditorChecklist(digest?.editor_gap_checklist),
+    internal_link_recommendations: parseInternalLinkRecommendations(
+      digest?.internal_link_recommendations,
+    ),
+    aio_serp: parseAioSerpAudit(digest?.aio_serp),
+    prioritization: parsePrioritizationAudit(digest?.prioritization),
+    // Phase 2 (prompt v19) gap-aware outputs — read from the cluster row.
+    faq_gaps: parseFaqGaps(row.cluster.faq_gaps),
+    competitor_realism: parseCompetitorRealism(row.cluster.competitor_realism),
+    // SERP top-organic snapshot for the realism strip + SERP context block.
+    // Sourced from cp_seo_clusters.external_gap_signals.serp_top_organic.
+    serp_top_organic: parseSerpTopOrganic(
+      (row.cluster.external_gap_signals ?? null) as
+        | { serp_top_organic?: unknown }
+        | null,
+    ),
+  };
+}
+
 export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[]> {
   const supabase = await createClient();
 
@@ -302,195 +762,125 @@ export async function getSeoOpportunities(page: string): Promise<SeoOpportunity[
   // from findings via the cluster id. Returned shape matches SeoOpportunity.
   const { data, error } = await supabase
     .from("cp_seo_opportunities")
-    .select(
-      `
-      id, page, cluster_id, kind_text, score, status, assigned_to, notes,
-      first_seen_at, last_seen_at, archived_at,
-      cluster:cp_seo_clusters!inner (
-        label, canonical_query, is_branded, brand, retailer, product_family,
-        dataforseo_intent_prior, member_count, total_impressions, total_volume,
-        total_missed_clicks, weighted_ctr_pct, expected_ctr_pct, avg_position,
-        min_kd, max_kd, match_decision, match_score,
-        coverage_recommendation, coverage_confidence, coverage_input_digest,
-        anchor_queries, start_with_queries, anchor_external_canonicals,
-        cannibal_overlap,
-        cp_seo_query_findings ( query, topic_coverage_score )
-      )
-    `,
-    )
+    .select(OPPORTUNITY_CLUSTER_SELECT)
     .eq("page", page)
     .is("archived_at", null)
     .not("cluster_id", "is", null)
     .order("score", { ascending: false });
   if (error) throw new Error(error.message);
 
-  type Row = {
-    id: number;
-    page: string;
-    cluster_id: number;
-    kind_text: SeoOpportunity["kind"];
-    score: number;
-    status: SeoOpportunity["status"];
-    assigned_to: string | null;
-    notes: string | null;
-    first_seen_at: string;
-    last_seen_at: string;
-    archived_at: string | null;
-    cluster: {
-      label: string;
-      canonical_query: string;
-      is_branded: boolean;
-      brand: string | null;
-      retailer: string | null;
-      product_family: string | null;
-      dataforseo_intent_prior: string | null;
-      member_count: number;
-      total_impressions: number;
-      total_volume: number;
-      total_missed_clicks: number;
-      weighted_ctr_pct: number | null;
-      expected_ctr_pct: number | null;
-      avg_position: number | null;
-      min_kd: number | null;
-      max_kd: number | null;
-      match_decision: SeoOpportunity["match_decision"];
-      match_score: number | null;
-      coverage_recommendation: string | null;
-      coverage_confidence: number | string | null;
-      coverage_input_digest: ({
-        editor_actionability?: string;
-        guardrails?: unknown;
-      } & Record<string, unknown>) | null;
-      anchor_queries: { query: string; score: number }[] | null;
-      start_with_queries: string[] | null;
-      anchor_external_canonicals:
-        | Array<{ query: string; url: string; position: number }>
-        | null;
-      // Legacy shape: { query: string[] } — paths only.
-      // Current shape: { query: { url: string; wins?: [...] }[] } — SERP-verified
-      // competitors with annotations. Reader below tolerates both for rows
-      // classified before prompt v7.
-      cannibal_overlap:
-        | Record<string, Array<string | { url: string }>>
-        | null;
-      cp_seo_query_findings:
-        | { query: string; topic_coverage_score: number | string | null }[]
-        | null;
-    };
-  };
+  const rows = data as unknown as OpportunityRow[];
+  const linkedContentItemIds = await getLinkedContentItemIds(
+    supabase,
+    rows.map((row) => row.id),
+  );
 
-  return (data as unknown as Row[]).map((row) => {
-    const anchors = Array.isArray(row.cluster.anchor_queries)
-      ? row.cluster.anchor_queries.map((a) => a.query).filter((q): q is string => typeof q === "string")
-      : [];
-    // start_with_queries is the LLM-curated highlight subset, persisted
-    // NOT NULL DEFAULT '[]'. An empty array is a positive "nothing to
-    // attack" signal (correct for coverage_strong, wrong_page, cede, and
-    // review-gated rows whose only AIO anchors carry external canonicals) —
-    // do NOT fall back to highlighting every anchor in that case.
-    const startWith = Array.isArray(row.cluster.start_with_queries)
-      ? row.cluster.start_with_queries.filter((q): q is string => typeof q === "string")
-      : [];
-    const externalCanonicals: SeoOpportunity["external_canonicals"] = {};
-    if (Array.isArray(row.cluster.anchor_external_canonicals)) {
-      for (const e of row.cluster.anchor_external_canonicals) {
-        if (e && typeof e.query === "string" && typeof e.url === "string") {
-          externalCanonicals[e.query] = {
-            url: e.url,
-            position: typeof e.position === "number" ? e.position : null,
-          };
-        }
-      }
-    }
-    const cannibalSet = new Set<string>();
-    if (row.cluster.cannibal_overlap && typeof row.cluster.cannibal_overlap === "object") {
-      for (const entries of Object.values(row.cluster.cannibal_overlap)) {
-        for (const entry of entries ?? []) {
-          if (typeof entry === "string") cannibalSet.add(entry);
-          else if (entry && typeof entry === "object" && typeof entry.url === "string") {
-            cannibalSet.add(entry.url);
-          }
-        }
-      }
-    }
-    const digest = row.cluster.coverage_input_digest;
-    const rawGuardrails = digest?.guardrails;
-    const guardrails = Array.isArray(rawGuardrails)
-      ? rawGuardrails.filter((g): g is string => typeof g === "string")
-      : [];
-    const rawActionability = digest?.editor_actionability;
-    const actionability =
-      rawActionability === "ready" ||
-      rawActionability === "review" ||
-      rawActionability === "monitor" ||
-      rawActionability === "blocked"
-        ? rawActionability
-        : row.cluster.coverage_confidence != null && Number(row.cluster.coverage_confidence) < 0.6
-          ? "review"
-          : row.kind_text === "coverage_strong"
-            ? "monitor"
-            : row.kind_text === "cede" || row.kind_text === "wrong_page"
-              ? "blocked"
-              : "ready";
-    return {
-      id: row.id,
-      page: row.page,
-      cluster_id: row.cluster_id,
-      kind: row.kind_text ?? "needs_review",
-      score: row.score,
-      status: row.status,
-      assigned_to: row.assigned_to,
-      notes: row.notes,
-      first_seen_at: row.first_seen_at,
-      last_seen_at: row.last_seen_at,
-      archived_at: row.archived_at,
-      cluster_label: row.cluster.label,
-      canonical_query: row.cluster.canonical_query,
-      is_branded: row.cluster.is_branded,
-      brand: row.cluster.brand,
-      retailer: row.cluster.retailer,
-      product_family: row.cluster.product_family,
-      dataforseo_intent_prior: row.cluster.dataforseo_intent_prior,
-      page_content_type: asSeoPageContentType(digest?.page_content_type),
-      page_content_type_signals: asStringArray(digest?.page_content_type_signals),
-      member_count: row.cluster.member_count,
-      total_impressions: row.cluster.total_impressions,
-      total_volume: row.cluster.total_volume,
-      total_missed_clicks: row.cluster.total_missed_clicks,
-      weighted_ctr_pct: row.cluster.weighted_ctr_pct,
-      expected_ctr_pct: row.cluster.expected_ctr_pct,
-      avg_position: row.cluster.avg_position,
-      min_kd: row.cluster.min_kd,
-      max_kd: row.cluster.max_kd,
-      match_decision: row.cluster.match_decision,
-      match_score: row.cluster.match_score,
-      member_queries: (row.cluster.cp_seo_query_findings ?? []).map((f) => f.query),
-      topic_coverage_by_query: Object.fromEntries(
-        (row.cluster.cp_seo_query_findings ?? [])
-          .map((f) => [
-            f.query,
-            f.topic_coverage_score == null ? null : Number(f.topic_coverage_score),
-          ] as const)
-          .filter(([, v]) => v == null || (typeof v === "number" && Number.isFinite(v))),
-      ),
-      recommendation: row.cluster.coverage_recommendation,
-      confidence: row.cluster.coverage_confidence != null ? Number(row.cluster.coverage_confidence) : null,
-      actionability,
-      guardrails,
-      anchor_queries: anchors,
-      start_with_queries: startWith,
-      external_canonicals: externalCanonicals,
-      cannibal_pages: [...cannibalSet].sort(),
-      standalone_article: parseStandaloneArticleAudit(digest?.standalone_article),
-      recommendation_audit: parseRecommendationAudit(digest?.recommendation_audit),
-      editor_gap_checklist: parseEditorChecklist(digest?.editor_gap_checklist),
-      internal_link_recommendations: parseInternalLinkRecommendations(
-        digest?.internal_link_recommendations,
-      ),
-      aio_serp: parseAioSerpAudit(digest?.aio_serp),
-      prioritization: parsePrioritizationAudit(digest?.prioritization),
-    };
-  });
+  return rows.map((row) => mapOpportunityRow(row, linkedContentItemIds.get(row.id) ?? null));
+}
+
+/**
+ * Cluster-joined fetch by opportunity id. Used by the SEO tab in the content
+ * edit modal so the brief always renders the latest synthesis, never a
+ * snapshot. Returns the opportunity, the cluster's updated_at (for the
+ * staleness pill), and the link's created_at if a manual queue row points
+ * this opp at a content item.
+ */
+export type SeoOpportunityWithLink = {
+  opportunity: SeoOpportunity;
+  /** cp_seo_clusters.updated_at — bumps on any cluster write, including re-synthesis. */
+  synthesizedAt: string;
+  /** Latest cp_seo_manual_queue_items.created_at for this opportunity → content link. Null when no manual-queue row exists (legacy content items). */
+  linkedAt: string | null;
+};
+
+export async function getSeoOpportunityById(
+  id: number,
+): Promise<SeoOpportunityWithLink | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("cp_seo_opportunities")
+    .select(OPPORTUNITY_CLUSTER_SELECT)
+    .eq("id", id)
+    .is("archived_at", null)
+    .not("cluster_id", "is", null)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) return null;
+
+  const row = data as unknown as OpportunityRow;
+  const opportunity = mapOpportunityRow(row);
+
+  // Lookup the manual-queue row that links this opp to a content item — its
+  // created_at is the "linked at" timestamp. Multiple rows are possible
+  // across history; take the most recent. Pre-migration content items may
+  // not have a row at all, in which case linkedAt is null and the caller
+  // falls back to the content item's own created_at.
+  const { data: queueRow, error: queueErr } = await supabase
+    .from("cp_seo_manual_queue_items")
+    .select("created_at, linked_content_item_id")
+    .eq("linked_opportunity_id", id)
+    .is("archived_at", null)
+    .not("linked_content_item_id", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (queueErr) throw new Error(queueErr.message);
+
+  opportunity.linked_content_item_id =
+    typeof queueRow?.linked_content_item_id === "number"
+      ? queueRow.linked_content_item_id
+      : queueRow?.linked_content_item_id != null
+        ? Number(queueRow.linked_content_item_id)
+        : null;
+
+  return {
+    opportunity,
+    synthesizedAt: row.cluster.updated_at,
+    linkedAt: (queueRow?.created_at as string | undefined) ?? null,
+  };
+}
+
+function parseFaqGaps(raw: unknown): SeoOpportunity["faq_gaps"] {
+  if (!Array.isArray(raw)) return [];
+  const out: NonNullable<SeoOpportunity["faq_gaps"]> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as { question?: unknown; covered?: unknown; volume?: unknown };
+    if (typeof r.question !== "string") continue;
+    if (typeof r.covered !== "boolean") continue;
+    const volume = typeof r.volume === "number" && Number.isFinite(r.volume) ? r.volume : null;
+    out.push({ question: r.question, covered: r.covered, volume });
+  }
+  return out;
+}
+
+function parseCompetitorRealism(raw: unknown): SeoOpportunity["competitor_realism"] {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as { verdict?: unknown; reasoning?: unknown };
+  const verdict = r.verdict;
+  if (verdict !== "winnable" && verdict !== "snippet_only" && verdict !== "unrealistic") {
+    return null;
+  }
+  const reasoning = typeof r.reasoning === "string" ? r.reasoning : "";
+  return { verdict, reasoning };
+}
+
+function parseSerpTopOrganic(
+  raw: { serp_top_organic?: unknown } | null,
+): SeoOpportunity["serp_top_organic"] {
+  if (!raw) return [];
+  const arr = raw.serp_top_organic;
+  if (!Array.isArray(arr)) return [];
+  const out: NonNullable<SeoOpportunity["serp_top_organic"]> = [];
+  for (const item of arr) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as { rank?: unknown; url?: unknown; domain?: unknown };
+    if (typeof r.rank !== "number") continue;
+    if (typeof r.url !== "string") continue;
+    if (typeof r.domain !== "string") continue;
+    out.push({ rank: r.rank, url: r.url, domain: r.domain });
+  }
+  return out;
 }
 
 // ─── Phase 1C: site-wide synthesis findings ───────────────────────────────

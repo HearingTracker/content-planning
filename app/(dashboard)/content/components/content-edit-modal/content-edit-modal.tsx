@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useMemo } from "react";
-import { Loader2, FileText, Settings, Users, Calendar, Paperclip, MessageSquare, Package, Link as LinkIcon } from "lucide-react";
+import { Loader2, FileText, Settings, Users, Calendar, Paperclip, MessageSquare, Package, Link as LinkIcon, Sparkles } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -22,8 +22,10 @@ import type {
   CampaignSummary,
   ContentAssignment,
 } from "../types";
+import { getLinkedOpportunityId } from "../types";
 import { ContentTab } from "./tabs/content-tab";
 import { DetailsTab } from "./tabs/details-tab";
+import { SeoTab } from "./tabs/seo-tab";
 import { AssignmentsTab } from "./tabs/assignments-tab";
 import { DatesTab } from "./tabs/dates-tab";
 import { AttachmentsTab } from "./tabs/attachments-tab";
@@ -91,7 +93,7 @@ export function ContentEditModal({
   highlightCommentId,
   initialData,
 }: ContentEditModalProps) {
-  const [activeTab, setActiveTab] = useState("content");
+  const [activeTab, setActiveTab] = useState("details");
   const [localCampaigns, setLocalCampaigns] = useState<CampaignSummary[]>(filterOptions.campaigns);
   const [prevCampaigns, setPrevCampaigns] = useState(filterOptions.campaigns);
   const [contentItemId, setContentItemId] = useState<number | null>(item?.id ?? null);
@@ -146,7 +148,7 @@ export function ContentEditModal({
       setAssignments(item?.assignments || []);
       setPendingFiles([]);
       setPendingLinks([]);
-      setActiveTab("content");
+      setActiveTab("details");
     }
   }
 
@@ -212,6 +214,22 @@ export function ContentEditModal({
   const isBestList = item?.content_type?.slug === "best-list" ||
     filterOptions.types.find(t => t.id === formData.content_type_id)?.slug === "best-list";
 
+  // SEO tab is conditional on the brief having been created from an SEO
+  // opportunity (carries seo_metadata.opportunity_id). Mirrors how Products
+  // is conditional on isBestList.
+  const linkedOpportunityId = getLinkedOpportunityId(item);
+  const hasSeoLink = linkedOpportunityId != null;
+
+  // 6 base tabs (Details, Content, Team, Dates, Files, Links) + 1 each for
+  // optional SEO and Products. Class strings are listed explicitly so
+  // Tailwind's purge can see them.
+  const tabGridClass =
+    hasSeoLink && isBestList
+      ? "grid-cols-8 md:grid-cols-8"
+      : hasSeoLink || isBestList
+        ? "grid-cols-7 md:grid-cols-7"
+        : "grid-cols-6 md:grid-cols-6";
+
   // Convert save status to display text
   const saveStatusDisplay = useMemo(() => {
     switch (saveStatus) {
@@ -274,20 +292,29 @@ export function ContentEditModal({
               onValueChange={setActiveTab}
               className="flex flex-col h-full"
             >
-              <TabsList className={`grid w-full ${isBestList ? "grid-cols-7 md:grid-cols-7" : "grid-cols-6 md:grid-cols-6"} rounded-none border-b px-2 h-auto py-1 bg-transparent`}>
-                <TabsTrigger
-                  value="content"
-                  className="gap-1.5 data-[state=active]:bg-muted rounded-md py-2"
-                >
-                  <FileText className="h-4 w-4" />
-                  <span className="hidden sm:inline">Content</span>
-                </TabsTrigger>
+              <TabsList className={`grid w-full ${tabGridClass} rounded-none border-b px-2 h-auto py-1 bg-transparent`}>
                 <TabsTrigger
                   value="details"
                   className="gap-1.5 data-[state=active]:bg-muted rounded-md py-2"
                 >
                   <Settings className="h-4 w-4" />
                   <span className="hidden sm:inline">Details</span>
+                </TabsTrigger>
+                {hasSeoLink && (
+                  <TabsTrigger
+                    value="seo"
+                    className="gap-1.5 data-[state=active]:bg-muted rounded-md py-2"
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    <span className="hidden sm:inline">SEO</span>
+                  </TabsTrigger>
+                )}
+                <TabsTrigger
+                  value="content"
+                  className="gap-1.5 data-[state=active]:bg-muted rounded-md py-2"
+                >
+                  <FileText className="h-4 w-4" />
+                  <span className="hidden sm:inline">Content</span>
                 </TabsTrigger>
                 {isBestList && (
                   <TabsTrigger
@@ -352,6 +379,15 @@ export function ContentEditModal({
                     onCreateCampaign={handleCreateCampaign}
                   />
                 </TabsContent>
+
+                {hasSeoLink && linkedOpportunityId != null && (
+                  <TabsContent value="seo" className="mt-0">
+                    <SeoTab
+                      opportunityId={linkedOpportunityId}
+                      fallbackLinkedAt={item?.created_at ?? null}
+                    />
+                  </TabsContent>
+                )}
 
                 {isBestList && (
                   <TabsContent value="products" className="mt-0">

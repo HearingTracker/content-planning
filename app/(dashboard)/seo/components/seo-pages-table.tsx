@@ -4,48 +4,153 @@
 // across the top. Cluster-aware: uses the new kind keys from
 // cp_seo_opportunity_kinds via getKindMeta(). Stripe + hover tint on each
 // row are tinted by the most-actionable kind currently open on that page.
+//
+// Sort/search/filter state is held in the URL via nuqs so an editor's view is
+// shareable and survives reloads. The drawer's open state is also in the URL
+// (?page=/some-slug) — opened from a row, closed on Esc / outside-click.
 
 import { useMemo, useState } from "react";
+import {
+  useReactTable,
+  getCoreRowModel,
+  getSortedRowModel,
+  getFilteredRowModel,
+  type SortingState,
+  type ColumnDef,
+} from "@tanstack/react-table";
+import {
+  useQueryStates,
+  parseAsString,
+  parseAsStringLiteral,
+  parseAsBoolean,
+} from "nuqs";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ExternalLink, Info, Sparkles, X } from "lucide-react";
+import { ArrowUpDown, ExternalLink, Eye, EyeOff, Info, Search, Sparkles, X } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useSeoPages } from "@/hooks/queries";
-import { SeoPageDrilldown } from "./seo-page-drilldown";
-import { getKindMeta, KIND_META } from "./kind-meta";
+import Link from "next/link";
+import {
+  KIND_COUNT_FIELDS,
+  KIND_META,
+  dominantKind,
+  getKindMeta,
+  nonZeroKindCounts,
+} from "./kind-meta";
 import { cn } from "@/lib/utils";
 import type { SeoOppKindKey, SeoPage } from "../types";
 
-// Per-page count fields, ordered by priority (most actionable first). The
-// dominant-kind selection scans this list and picks the first non-zero one.
-const KIND_COUNT_FIELDS: Array<{ key: SeoOppKindKey; field: keyof SeoPage }> = [
-  { key: "wrong_page",       field: "open_wrong_page" },
-  { key: "intent_gap",       field: "open_secondary" }, // legacy view column maps here
-  { key: "coverage_partial", field: "open_supporting" }, // legacy view column maps here
-  { key: "snippet_ctr",      field: "open_snippet_ctr" },
-  { key: "freshness",        field: "open_freshness" },
-  { key: "coverage_strong",  field: "open_primary" },   // legacy view column maps here
-  { key: "needs_review",     field: "open_needs_review" },
-];
+const KIND_KEYS = Object.keys(KIND_META) as SeoOppKindKey[];
 
-function dominantKind(p: SeoPage): SeoOppKindKey | null {
-  for (const { key, field } of KIND_COUNT_FIELDS) {
-    if (Number(p[field] ?? 0) > 0) return key;
-  }
-  return null;
-}
+// Sort options exposed in the toolbar. Keyed by `${field}:${dir}` so the URL
+// param is a single string and we don't need a custom parser for the SortingState.
+const SORT_OPTIONS = [
+  { value: "earnings_90d:desc",      label: "Earnings (high → low)",    sortKey: "earnings_90d",      desc: true  },
+  { value: "open_missed_clicks:desc",label: "Missed clicks (high → low)", sortKey: "open_missed_clicks", desc: true },
+  { value: "max_score:desc",         label: "Priority score (high → low)", sortKey: "max_score",       desc: true  },
+  { value: "avg_position:asc",       label: "Avg rank (best first)",      sortKey: "avg_position",    desc: false },
+  { value: "page:asc",               label: "Page (A → Z)",               sortKey: "page",            desc: false },
+  { value: "last_synced_at:desc",    label: "Last synced (newest)",       sortKey: "last_synced_at",  desc: true  },
+] as const;
+type SortValue = (typeof SORT_OPTIONS)[number]["value"];
+const SORT_VALUES = SORT_OPTIONS.map((o) => o.value) as readonly SortValue[];
+const DEFAULT_SORT: SortValue = "earnings_90d:desc";
 
-function nonZeroKindCounts(p: SeoPage): Array<{ key: SeoOppKindKey; count: number }> {
-  return KIND_COUNT_FIELDS
-    .map(({ key, field }) => ({ key, count: Number(p[field] ?? 0) }))
-    .filter((s) => s.count > 0);
+function sortValueToState(value: SortValue): SortingState {
+  const opt = SORT_OPTIONS.find((o) => o.value === value) ?? SORT_OPTIONS[0];
+  return [{ id: opt.sortKey, desc: opt.desc }];
 }
 
 export function SeoPagesTable() {
   const { data: pages, isLoading, isError, error } = useSeoPages();
-  const [active, setActive] = useState<SeoPage | null>(null);
-  const [kindFilter, setKindFilter] = useState<SeoOppKindKey | null>(null);
+
+  const [urlState, setUrlState] = useQueryStates(
+    {
+      kind: parseAsStringLiteral(KIND_KEYS),
+      q: parseAsString.withDefault(""),
+      sort: parseAsStringLiteral(SORT_VALUES).withDefault(DEFAULT_SORT),
+      hideEmpty: parseAsBoolean.withDefault(false),
+    },
+    { history: "push" },
+  );
+
+  // Tanstack table runs in headless mode — it owns sort + filter state but the
+  // rows render as the existing PageRow component, not as <TableCell>s. This
+  // preserves the card-style layout (stripe, hover wash, animate-in) that the
+  // editorial design depends on.
+  const columns = useMemo<ColumnDef<SeoPage>[]>(
+    () => [
+      { id: "page", accessorKey: "page" },
+      { id: "page_title", accessorKey: "page_title" },
+      {
+        id: "earnings_90d",
+        accessorFn: (row) => Number(row.earnings_90d ?? 0),
+      },
+      {
+        id: "open_missed_clicks",
+        accessorFn: (row) => Number(row.open_missed_clicks ?? 0),
+      },
+      {
+        id: "max_score",
+        accessorFn: (row) => Number(row.max_score ?? 0),
+      },
+      {
+        id: "avg_position",
+        accessorFn: (row) => (row.avg_position == null ? Number.MAX_SAFE_INTEGER : Number(row.avg_position)),
+      },
+      { id: "last_synced_at", accessorKey: "last_synced_at" },
+    ],
+    [],
+  );
+
+  const sortingState = useMemo(() => sortValueToState(urlState.sort), [urlState.sort]);
+
+  const table = useReactTable({
+    data: pages ?? [],
+    columns,
+    state: {
+      sorting: sortingState,
+      globalFilter: urlState.q,
+    },
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    globalFilterFn: (row, _columnId, filterValue) => {
+      const q = String(filterValue ?? "").trim().toLowerCase();
+      if (!q) return true;
+      const p = row.original;
+      return (
+        p.page.toLowerCase().includes(q)
+        || (p.page_title ?? "").toLowerCase().includes(q)
+        || (p.top_query ?? "").toLowerCase().includes(q)
+      );
+    },
+  });
+
+  // Filter is a linear scan over an already-sorted small array (table.getRowModel
+  // does the sort + search). No memoization — every render recomputes cheaply,
+  // and the tanstack model reference is unstable in ways React Compiler can't see.
+  const filteredPages = (() => {
+    let result = table.getRowModel().rows.map((r) => r.original);
+    if (urlState.kind) {
+      const field = KIND_COUNT_FIELDS.find((f) => f.key === urlState.kind)?.field;
+      if (field) result = result.filter((p) => Number(p[field] ?? 0) > 0);
+    }
+    if (urlState.hideEmpty) {
+      result = result.filter((p) => (p.open_missed_clicks ?? 0) > 0);
+    }
+    return result;
+  })();
 
   const summary = useMemo(() => {
     if (!pages || pages.length === 0) return null;
@@ -80,13 +185,6 @@ export function SeoPagesTable() {
     }, null);
   }, [pages]);
 
-  const filteredPages = useMemo(() => {
-    if (!pages || !kindFilter) return pages;
-    const field = KIND_COUNT_FIELDS.find((f) => f.key === kindFilter)?.field;
-    if (!field) return pages;
-    return pages.filter((p) => Number(p[field] ?? 0) > 0);
-  }, [pages, kindFilter]);
-
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -118,48 +216,155 @@ export function SeoPagesTable() {
     );
   }
 
-  const visiblePages = filteredPages ?? pages;
-
   return (
     <TooltipProvider delayDuration={150}>
       {summary && (
         <OverviewHeader
           summary={summary}
           lastSyncedAt={lastSyncedAt}
-          activeKind={kindFilter}
-          onToggleKind={(k) => setKindFilter((prev) => (prev === k ? null : k))}
+          activeKind={urlState.kind ?? null}
+          onToggleKind={(k) =>
+            setUrlState({ kind: urlState.kind === k ? null : k })
+          }
         />
       )}
 
-      <div className="mt-3 overflow-hidden rounded-lg border bg-card divide-y">
-        {visiblePages.length === 0 ? (
+      <Toolbar
+        q={urlState.q}
+        onQChange={(q) => setUrlState({ q })}
+        sort={urlState.sort}
+        onSortChange={(sort) => setUrlState({ sort })}
+        hideEmpty={urlState.hideEmpty}
+        onHideEmptyChange={(hideEmpty) => setUrlState({ hideEmpty })}
+        visibleCount={filteredPages.length}
+        totalCount={pages.length}
+        hasSearch={urlState.q.trim().length > 0}
+        hasKindFilter={urlState.kind != null}
+        onClearFilters={() => setUrlState({ q: "", kind: null, hideEmpty: false })}
+      />
+
+      <div
+        id="seo-pages-list"
+        className="mt-3 overflow-hidden rounded-lg border bg-card divide-y"
+      >
+        {filteredPages.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">
-            No pages match the{" "}
-            <span className="font-medium text-foreground">
-              {kindFilter ? KIND_META[kindFilter].displayLabel.toLowerCase() : ""}
-            </span>{" "}
-            filter.{" "}
+            No pages match your filters.{" "}
             <button
               type="button"
               className="underline underline-offset-2 hover:text-foreground"
-              onClick={() => setKindFilter(null)}
+              onClick={() => setUrlState({ q: "", kind: null, hideEmpty: false })}
             >
-              Show all pages
+              Clear filters
             </button>
           </div>
         ) : (
-          visiblePages.map((p, i) => (
-            <PageRow key={p.page} page={p} index={i} onOpen={setActive} />
+          filteredPages.map((p, i) => (
+            <PageRow key={p.page} page={p} index={i} />
           ))
         )}
       </div>
-
-      <SeoPageDrilldown
-        page={active}
-        open={!!active}
-        onOpenChange={(next) => !next && setActive(null)}
-      />
     </TooltipProvider>
+  );
+}
+
+// ─── Toolbar ──────────────────────────────────────────────────────────────
+// Search + sort + hide-empty controls. Mirrors the search-input convention from
+// app/(dashboard)/content/components/content-filters.tsx (controlled, no debounce).
+
+function Toolbar({
+  q,
+  onQChange,
+  sort,
+  onSortChange,
+  hideEmpty,
+  onHideEmptyChange,
+  visibleCount,
+  totalCount,
+  hasSearch,
+  hasKindFilter,
+  onClearFilters,
+}: {
+  q: string;
+  onQChange: (q: string) => void;
+  sort: SortValue;
+  onSortChange: (s: SortValue) => void;
+  hideEmpty: boolean;
+  onHideEmptyChange: (v: boolean) => void;
+  visibleCount: number;
+  totalCount: number;
+  hasSearch: boolean;
+  hasKindFilter: boolean;
+  onClearFilters: () => void;
+}) {
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border bg-card px-3 py-2">
+      <div className="relative min-w-0 flex-1 max-w-md">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          aria-label="Search pages"
+          aria-controls="seo-pages-list"
+          placeholder="Search by page slug, title, or top query…"
+          value={q}
+          onChange={(e) => onQChange(e.target.value)}
+          className="h-8 pl-8 pr-7 text-sm"
+        />
+        {q && (
+          <button
+            type="button"
+            aria-label="Clear search"
+            onClick={() => onQChange("")}
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-zinc-100 hover:text-foreground"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+
+      <Select value={sort} onValueChange={(v) => onSortChange(v as SortValue)}>
+        <SelectTrigger className="h-8 w-[220px] text-xs" aria-label="Sort pages">
+          <ArrowUpDown className="h-3.5 w-3.5 opacity-60" />
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {SORT_OPTIONS.map((opt) => (
+            <SelectItem key={opt.value} value={opt.value}>
+              {opt.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Button
+        type="button"
+        variant={hideEmpty ? "default" : "outline"}
+        size="sm"
+        className="h-8 gap-1.5"
+        onClick={() => onHideEmptyChange(!hideEmpty)}
+        aria-pressed={hideEmpty}
+        aria-controls="seo-pages-list"
+      >
+        {hideEmpty ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+        <span className="text-xs">
+          {hideEmpty ? "Hidden: no-gap pages" : "Show all"}
+        </span>
+      </Button>
+
+      <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="tabular-nums">
+          {visibleCount} of {totalCount}
+        </span>
+        {(hasSearch || hasKindFilter || hideEmpty) && (
+          <button
+            type="button"
+            onClick={onClearFilters}
+            className="rounded px-2 py-1 underline underline-offset-2 hover:bg-zinc-100 hover:text-foreground"
+          >
+            clear filters
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -233,12 +438,16 @@ function OverviewHeader({
             <span className="text-sm text-muted-foreground">clicks / mo</span>
           </div>
 
+          {/* A1: caveat pill — promoted from a muted prose line to an
+              unmissable badge so editors don't take the hero number at face
+              value. The full calculation explanation stays on the badge's
+              tooltip. */}
           <Tooltip>
             <TooltipTrigger asChild>
-              <p className="mt-2 max-w-md text-[12.5px] leading-snug text-muted-foreground cursor-help">
-                Before SERP caps: if every open cluster reached the typical CTR for its current ranking
-                position. <span className="underline decoration-dotted decoration-zinc-300 underline-offset-2">How is this calculated?</span>
-              </p>
+              <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-amber-100/80 px-2 py-0.5 text-[11px] font-medium text-amber-900 ring-1 ring-inset ring-amber-200 cursor-help">
+                <Info className="h-3 w-3" />
+                raw ceiling · pre-cap
+              </span>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="max-w-sm">
               For each open cluster: impressions × expected CTR by average position minus actual
@@ -258,7 +467,7 @@ function OverviewHeader({
               value={`$${Math.round(summary.earnings).toLocaleString()}`}
               sub={
                 dollarsPerConv != null ? (
-                  <span className="text-[10.5px] text-muted-foreground/80 tabular-nums">
+                  <span className="text-[11px] text-muted-foreground/80 tabular-nums">
                     ${dollarsPerConv.toFixed(0)} / conv
                   </span>
                 ) : null
@@ -293,7 +502,9 @@ function OverviewHeader({
                 Showing {KIND_META[activeKind].shortLabel.toLowerCase()} only
               </button>
             ) : (
-              <span className="text-[11px] text-muted-foreground/80 hidden sm:inline">
+              // A2: visible on every viewport. Touch users need the hint more
+              // than desktop users since hover-discovery doesn't exist there.
+              <span className="text-[11px] text-muted-foreground/80">
                 click a chip to filter
               </span>
             )}
@@ -326,6 +537,7 @@ function OverviewHeader({
                         style={{ width: `${pct}%` }}
                         aria-label={`${n} ${meta.displayLabel} — ${pct.toFixed(0)}%`}
                         aria-pressed={isActive}
+                        aria-controls="seo-pages-list"
                       />
                     </TooltipTrigger>
                     <TooltipContent side="top">
@@ -343,7 +555,7 @@ function OverviewHeader({
           {/* Filter chips */}
           <div className="mt-3 flex flex-wrap gap-1.5">
             {kindEntries.length === 0 ? (
-              <span className="text-[12px] italic text-muted-foreground/80">
+              <span className="text-xs italic text-muted-foreground/80">
                 No open clusters across the synced pages.
               </span>
             ) : (
@@ -361,6 +573,7 @@ function OverviewHeader({
                     onFocus={() => setHoveredKind(key)}
                     onBlur={() => setHoveredKind(null)}
                     aria-pressed={isActive}
+                    aria-controls="seo-pages-list"
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
                       meta.tone.chip,
@@ -381,7 +594,7 @@ function OverviewHeader({
               English. Min-height keeps the chip row from jumping when the
               text appears/disappears. */}
           {kindEntries.length > 0 && (
-            <div className="mt-2 min-h-[2.4em] text-[12px] leading-snug">
+            <div className="mt-2 min-h-[2.4em] text-xs leading-snug">
               {explainKind ? (
                 <>
                   <span className="font-medium text-foreground">
@@ -402,21 +615,28 @@ function OverviewHeader({
         </div>
       </div>
 
-      {/* Footer: sync recency */}
+      {/* Footer: sync recency. A3: data-source list moved into the tooltip so
+          the footer scans as a single "is the data fresh?" line. */}
       {lastSyncedAt && (
         <div className="relative flex items-center justify-between border-t bg-zinc-50/60 px-5 py-2 sm:px-6">
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400/60 animate-ping" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
-            </span>
-            <span>
-              Synced {formatDistanceToNow(new Date(lastSyncedAt), { addSuffix: true })}
-            </span>
-          </div>
-          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">
-            Storyblok · GSC · DataForSEO
-          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-help">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400/60 animate-ping" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                </span>
+                <span>
+                  Synced {formatDistanceToNow(new Date(lastSyncedAt), { addSuffix: true })}
+                </span>
+                <Info className="h-2.5 w-2.5 opacity-60" />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              Data pulled from Storyblok (page metadata), Google Search Console (clicks /
+              impressions), and DataForSEO (search volume + SERP snapshots).
+            </TooltipContent>
+          </Tooltip>
         </div>
       )}
     </div>
@@ -434,7 +654,7 @@ function HeroStat({
 }) {
   return (
     <div className="min-w-0">
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+      <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
         {label}
       </div>
       <div className="mt-1 text-xl font-semibold leading-none tabular-nums tracking-tight text-foreground">
@@ -450,11 +670,9 @@ function HeroStat({
 function PageRow({
   page: p,
   index,
-  onOpen,
 }: {
   page: SeoPage;
   index: number;
-  onOpen: (p: SeoPage) => void;
 }) {
   const dom = dominantKind(p);
   const dominantMeta = dom ? KIND_META[dom] : null;
@@ -465,18 +683,16 @@ function PageRow({
   const topKindMeta = p.top_kind ? getKindMeta(p.top_kind) : null;
 
   return (
-    <div
-      className="group/row relative bg-card animate-in fade-in fill-mode-both duration-500 cursor-pointer"
+    <Link
+      href={`/seo${p.page}`}
+      className={cn(
+        "group/row relative block bg-card animate-in fade-in fill-mode-both duration-500",
+        // A5: keyboard focus indicator on the row itself. The nested <a>
+        // already has a focus state; the row didn't, so tab navigation went
+        // blind across the table.
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-900",
+      )}
       style={{ animationDelay: `${index * 30}ms` }}
-      role="button"
-      tabIndex={0}
-      onClick={() => onOpen(p)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onOpen(p);
-        }
-      }}
     >
       {/* Hover wash — gradient bleeds in from the left, tinted by dominant kind */}
       <span
@@ -503,18 +719,20 @@ function PageRow({
             <span className="font-mono text-sm font-medium text-foreground tracking-tight truncate">
               {p.page}
             </span>
-            <a
-              href={`https://www.hearingtracker.com${p.page}`}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => e.stopPropagation()}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                window.open(`https://www.hearingtracker.com${p.page}`, "_blank", "noopener");
+              }}
               onKeyDown={(e) => e.stopPropagation()}
               className="text-muted-foreground hover:text-foreground inline-flex shrink-0 -translate-x-1 rounded p-0.5 opacity-0 transition-all duration-200 group-hover/row:translate-x-0 group-hover/row:opacity-100 focus:opacity-100"
               title="Open page in new tab"
               aria-label={`Open ${p.page} in a new tab`}
             >
               <ExternalLink className="h-3.5 w-3.5" />
-            </a>
+            </button>
           </div>
           {p.page_title && (
             <div className="text-muted-foreground text-xs truncate mt-0.5 max-w-md">
@@ -542,7 +760,7 @@ function PageRow({
               <span className="text-muted-foreground text-[10px] uppercase tracking-wider shrink-0 pt-[3px]">
                 Top
               </span>
-              <span className="min-w-0 text-[12px] leading-snug">
+              <span className="min-w-0 text-xs leading-snug">
                 <span className="text-foreground font-medium">{p.top_query}</span>
                 {p.top_member_count != null && p.top_member_count > 1 && (
                   <span className="text-muted-foreground"> · {p.top_member_count} queries</span>
@@ -600,7 +818,7 @@ function PageRow({
           )}
         </div>
       </div>
-    </div>
+    </Link>
   );
 }
 
@@ -621,24 +839,33 @@ function KindBreakdownBar({ p }: { p: SeoPage }) {
   const total = segments.reduce((s, x) => s + x.count, 0);
   if (total === 0) {
     return (
-      <div className="text-muted-foreground/80 text-[12px] italic">no open clusters</div>
+      <div className="text-muted-foreground/80 text-xs italic">no open clusters</div>
     );
   }
 
   return (
-    <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-zinc-100">
+    // A4: bar is now h-2 (was h-1.5) for better visibility, and each segment
+    // is a focusable <button> so keyboard users can tab through the breakdown.
+    // Click stops propagation so it doesn't open the row's drawer accidentally.
+    <div className="flex h-2 w-full overflow-hidden rounded-full bg-zinc-100">
       {segments.map((s) => {
         const meta = KIND_META[s.key];
         return (
           <Tooltip key={s.key}>
             <TooltipTrigger asChild>
-              <span
+              <button
+                type="button"
+                tabIndex={-1}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
                 className={cn(
-                  "h-full transition-opacity hover:opacity-80 cursor-help",
+                  "h-full transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-inset",
                   meta.tone.stripe,
                 )}
                 style={{ width: `${(s.count / total) * 100}%` }}
-                aria-label={`${s.count} ${meta.shortLabel}`}
+                aria-label={`${s.count} ${meta.displayLabel}`}
               />
             </TooltipTrigger>
             <TooltipContent side="top">
@@ -650,3 +877,4 @@ function KindBreakdownBar({ p }: { p: SeoPage }) {
     </div>
   );
 }
+

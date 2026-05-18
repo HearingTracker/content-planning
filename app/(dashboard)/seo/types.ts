@@ -31,6 +31,7 @@ export type SeoManualQueueItem = {
   status: SeoOppStatus;
   linked_opportunity_id: number | null;
   linked_synthesis_finding_id: number | null;
+  linked_content_item_id: number | null;
   assigned_to: string | null;
   created_by: string | null;
   created_at: string;
@@ -210,6 +211,7 @@ export type SeoOpportunity = {
   score: number;
   status: SeoOppStatus;
   assigned_to: string | null;
+  linked_content_item_id: number | null;
   notes: string | null;
   first_seen_at: string;
   last_seen_at: string;
@@ -282,6 +284,35 @@ export type SeoOpportunity = {
   internal_link_recommendations: SeoInternalLinkRecommendation[];
   aio_serp: SeoAioSerpAudit | null;
   prioritization: SeoPrioritizationAudit | null;
+
+  /**
+   * Per-FAQ-candidate coverage judgment from the classifier (prompt v19+).
+   * Each entry is one PAA/question-keyword question the prompt fed the model,
+   * paired with the model's verdict on whether the page already covers it.
+   * Empty when no FAQ candidates were available for the cluster, or when the
+   * row predates v19.
+   */
+  faq_gaps: Array<{
+    question: string;
+    covered: boolean;
+    /** Monthly volume from the candidate list (null for PAA entries). */
+    volume: number | null;
+  }>;
+  /**
+   * "Can we even outrank this SERP?" verdict from the classifier. Null when
+   * fail-soft fallback fired or row predates v19. The realism strip on the
+   * cluster card consumes this directly.
+   */
+  competitor_realism: {
+    verdict: "winnable" | "snippet_only" | "unrealistic";
+    reasoning: string;
+  } | null;
+  /**
+   * Top-organic snapshot from the canonical query's SERP (or first anchor's,
+   * when canonical didn't cache). Drives the SERP-context disclosure on the
+   * cluster card. Empty when no SERP cached.
+   */
+  serp_top_organic: Array<{ rank: number; url: string; domain: string }>;
 
   // Joined assignee profile, optional
   assignee?: { display_name: string | null; avatar_url: string | null; email: string | null } | null;

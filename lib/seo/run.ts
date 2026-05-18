@@ -51,6 +51,7 @@ export type RunOptions = {
   minPosition?: number;   // default 4
   maxPosition?: number;   // default 15
   minImpressions?: number;// default 50
+  gscMaxRows?: number;    // default 100000. SEO_DEV_GSC_MAX_ROWS overrides in dev.
   topPerPage?: number;    // default 10. Set to 0/null via includeAllForClustering to disable cap.
   country?: string;       // default 'us' (DataForSEO)
   includePrimary?: boolean; // default false (skip head terms)
@@ -74,6 +75,13 @@ function pathOf(url: string): string {
 
 const fmt = (d: Date) => d.toISOString().slice(0, 10);
 
+function positiveIntEnv(key: string): number | undefined {
+  const raw = process.env[key];
+  if (raw == null || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
 export async function runOpportunityExport(opts: RunOptions = {}): Promise<{
   pages: SeoPageRow[];
   opportunities: SeoOpportunityRow[];
@@ -88,6 +96,7 @@ export async function runOpportunityExport(opts: RunOptions = {}): Promise<{
   const minPos = opts.minPosition ?? 4;
   const maxPos = opts.maxPosition ?? 15;
   const minImp = opts.minImpressions ?? 50;
+  const gscMaxRows = opts.gscMaxRows ?? positiveIntEnv("SEO_DEV_GSC_MAX_ROWS");
   const includeAllForClustering = opts.includeAllForClustering ?? false;
   const topPerPage = includeAllForClustering ? null : (opts.topPerPage ?? 10);
   const country = opts.country ?? "us";
@@ -96,8 +105,13 @@ export async function runOpportunityExport(opts: RunOptions = {}): Promise<{
   // 1. GSC striking-distance keywords
   const end = new Date(); end.setDate(end.getDate() - 3); // 3-day lag
   const start = new Date(end); start.setDate(start.getDate() - gscDays);
-  log(`querying GSC ${fmt(start)} → ${fmt(end)}`);
-  const rows = await fetchGSCRows({ siteUrl: site, startDate: fmt(start), endDate: fmt(end) });
+  log(`querying GSC ${fmt(start)} → ${fmt(end)}${gscMaxRows ? ` (max ${gscMaxRows.toLocaleString()} rows)` : ""}`);
+  const rows = await fetchGSCRows({
+    siteUrl: site,
+    startDate: fmt(start),
+    endDate: fmt(end),
+    maxRows: gscMaxRows,
+  });
   log(`GSC rows: ${rows.length}`);
 
   type SDRow = {

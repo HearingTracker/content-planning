@@ -28,11 +28,22 @@ export type SerpData = {
   top_organic: SerpOrganicResult[];
   ai_overview_present: boolean;
   ai_overview_sources: string[];
+  // "People also ask" question titles, in SERP order. Empty when the block
+  // didn't appear on this SERP. Used to feed the FAQ-gap surface.
+  paa_questions: string[];
+  // "Related searches" block at the bottom of the SERP. Cheap topic adjacency
+  // for surfacing nearby intents the page could expand into.
+  related_searches: string[];
 };
 
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TOP_N = 20;
 const FETCH_CONCURRENCY = 5;
+// Migration 20260517032418 added PAA / related-search columns. If a local DB
+// applied an earlier draft of that migration with DEFAULT '[]', pre-migration
+// cache rows are indistinguishable from true empty results unless we also look
+// at fetched_at. Refetch old empty rows once so the new gap signals back-fill.
+const GAP_SIGNAL_SCHEMA_CUTOFF_MS = Date.parse("2026-05-17T03:24:18Z");
 
 // DataForSEO uses numeric location codes; map our short country codes onto them.
 const COUNTRY_TO_LOCATION_CODE: Record<string, number> = {
@@ -51,12 +62,23 @@ function getServiceClient() {
   );
 }
 
+type DfsPaaChild = {
+  type?: string;
+  title?: string | null;
+  seed_question?: string | null;
+};
+
 type DfsSerpItem = {
   type?: string;
   rank_absolute?: number | null;
   url?: string | null;
   domain?: string | null;
   references?: Array<{ url?: string | null }> | null;
+  // people_also_ask: a parent block whose .items array contains the questions.
+  // Older DataForSEO responses occasionally surface PAA questions directly via
+  // a top-level "title" instead, so we handle both shapes.
+  items?: DfsPaaChild[] | string[] | null;
+  title?: string | null;
 };
 
 type DfsSerpResponse = {
@@ -111,11 +133,40 @@ async function fetchOne(keyword: string, locationCode: number): Promise<SerpData
   const organic: SerpOrganicResult[] = [];
   let aiOverviewPresent = false;
   const aiSources = new Set<string>();
+  const paa: string[] = [];
+  const related: string[] = [];
   for (const item of items) {
     if (item.type === "ai_overview") {
       aiOverviewPresent = true;
       for (const ref of item.references ?? []) {
         if (ref?.url) aiSources.add(ref.url);
+      }
+      continue;
+    }
+    if (item.type === "people_also_ask") {
+      for (const child of (item.items ?? []) as DfsPaaChild[] | string[]) {
+        if (typeof child === "string") {
+          if (child) paa.push(child);
+          continue;
+        }
+        // PAA child shape: {type:"people_also_ask_element", title:"..."}.
+        // Some responses also include a top-level title — fall back to it.
+        const q = child?.title ?? child?.seed_question ?? null;
+        if (q) paa.push(q);
+      }
+      continue;
+    }
+    if (item.type === "related_searches") {
+      // Related-searches block shape: {type, items: string[]} (array of
+      // plain strings, not objects). Defensive: also tolerate object items
+      // with .title for forward compatibility.
+      for (const child of (item.items ?? []) as DfsPaaChild[] | string[]) {
+        if (typeof child === "string") {
+          if (child) related.push(child);
+          continue;
+        }
+        const q = child?.title ?? null;
+        if (q) related.push(q);
       }
       continue;
     }
@@ -134,6 +185,8 @@ async function fetchOne(keyword: string, locationCode: number): Promise<SerpData
     top_organic: organic,
     ai_overview_present: aiOverviewPresent,
     ai_overview_sources: [...aiSources],
+    paa_questions: [...new Set(paa)],
+    related_searches: [...new Set(related)],
   };
 }
 
@@ -143,6 +196,8 @@ type CacheRow = {
   top_organic: SerpOrganicResult[] | null;
   ai_overview_present: boolean;
   ai_overview_sources: string[] | null;
+  paa_questions: string[] | null;
+  related_searches: string[] | null;
   fetched_at: string;
 };
 
@@ -152,7 +207,28 @@ function rowToSerp(r: CacheRow): SerpData {
     top_organic: r.top_organic ?? [],
     ai_overview_present: r.ai_overview_present,
     ai_overview_sources: r.ai_overview_sources ?? [],
+    paa_questions: r.paa_questions ?? [],
+    related_searches: r.related_searches ?? [],
   };
+}
+
+// Pre-migration rows have NULL paa_questions / related_searches columns
+// (or the columns themselves don't exist yet in stale envs). We treat those
+// as cache misses so the next sync re-fetches and back-fills the row.
+function rowHasGapSignals(r: CacheRow): boolean {
+  if (r.paa_questions == null || r.related_searches == null) return false;
+  const fetchedAtMs = Date.parse(r.fetched_at);
+  if (
+    Array.isArray(r.paa_questions) &&
+    Array.isArray(r.related_searches) &&
+    r.paa_questions.length === 0 &&
+    r.related_searches.length === 0 &&
+    Number.isFinite(fetchedAtMs) &&
+    fetchedAtMs < GAP_SIGNAL_SCHEMA_CUTOFF_MS
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -194,6 +270,10 @@ export async function loadSerps(
       .in("keyword", slice);
     if (error) throw new Error(`serp cache read failed: ${error.message}`);
     for (const row of (data ?? []) as CacheRow[]) {
+      // Skip rows missing the PAA/related fields — they were cached before
+      // the paa_questions/related_searches migration and would silently feed
+      // the classifier no FAQ-gap signal. Treating them as misses re-fetches.
+      if (!rowHasGapSignals(row)) continue;
       out.set(row.keyword, rowToSerp(row));
     }
   }
@@ -238,6 +318,8 @@ export async function loadSerps(
       top_organic: r.top_organic,
       ai_overview_present: r.ai_overview_present,
       ai_overview_sources: r.ai_overview_sources,
+      paa_questions: r.paa_questions,
+      related_searches: r.related_searches,
       fetched_at: new Date().toISOString(),
     }));
     const upsertChunk = 200;

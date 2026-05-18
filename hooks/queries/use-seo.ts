@@ -3,10 +3,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query-keys";
 import {
+  convertOpportunityToContentItem,
   createManualSeoQueueItem,
   getManualSeoQueueItems,
+  getSeoPage,
   getSeoPages,
   getSeoOpportunities,
+  getSeoOpportunityById,
   updateManualSeoQueueItemStatus,
   updateOpportunityStatus,
   assignOpportunity,
@@ -28,6 +31,19 @@ export function useSeoPages() {
   return useQuery({
     queryKey: queryKeys.seo.pages(),
     queryFn: getSeoPages,
+  });
+}
+
+/**
+ * Single SEO page row by URL path (e.g. "/hearing-aids"). Backs the dedicated
+ * /seo/[...slug] detail page so a deep link doesn't require pre-loading the
+ * full pages list.
+ */
+export function useSeoPage(page: string | null) {
+  return useQuery({
+    queryKey: page ? queryKeys.seo.page(page) : ["seo", "page", "none"],
+    queryFn: () => (page ? getSeoPage(page) : Promise.resolve(null)),
+    enabled: !!page,
   });
 }
 
@@ -64,6 +80,26 @@ export function useSeoOpportunities(page: string | null) {
     queryKey: page ? queryKeys.seo.opportunities(page) : ["seo", "opportunities", "none"],
     queryFn: () => (page ? getSeoOpportunities(page) : Promise.resolve([])),
     enabled: !!page,
+  });
+}
+
+/**
+ * Single opportunity (with its cluster join) by id. Backs the SEO tab in the
+ * content edit modal — the tab loads the latest synthesis live so the brief
+ * can flag itself as stale when the cluster has been re-synthesized since
+ * the content item was created.
+ */
+export function useSeoOpportunity(opportunityId: number | null | undefined) {
+  return useQuery({
+    queryKey:
+      opportunityId != null
+        ? queryKeys.seo.opportunityById(opportunityId)
+        : ["seo", "opportunity", "none"],
+    queryFn: () =>
+      opportunityId != null
+        ? getSeoOpportunityById(opportunityId)
+        : Promise.resolve(null),
+    enabled: opportunityId != null,
   });
 }
 
@@ -122,6 +158,28 @@ export function useUpdateOpportunityNotes() {
       updateOpportunityNotes(id, notes),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.seo.all });
+    },
+  });
+}
+
+/**
+ * Convert an SEO opportunity into a /content editorial item. Invalidates
+ * both SEO and content query roots so the manual queue, the opportunity
+ * status, and the editorial board all re-fetch.
+ */
+export function useConvertOpportunityToContentItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      oppId,
+      assignedAuthorId,
+    }: {
+      oppId: number;
+      assignedAuthorId?: string | null;
+    }) => convertOpportunityToContentItem(oppId, { assignedAuthorId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.seo.all });
+      qc.invalidateQueries({ queryKey: queryKeys.content.all });
     },
   });
 }

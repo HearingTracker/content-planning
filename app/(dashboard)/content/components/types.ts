@@ -152,6 +152,27 @@ export interface BriefOutlineSection {
 // Unified Content Type
 // ============================================================================
 
+// Narrow shape of the seo_metadata JSONB pocket. Today only the SEO →
+// editorial bridge writes here; the load-bearing field is opportunity_id
+// (the SEO tab live-fetches the rest from cp_seo_opportunities). The other
+// keys are breadcrumb fallbacks in case the live fetch fails (opportunity
+// deleted, etc.). Legacy items may carry additional keys — keep the index
+// signature so older rows still typecheck.
+export interface ContentSeoMetadata {
+  source?: "seo_opportunity" | string;
+  opportunity_id?: number;
+  page?: string;
+  canonical_query?: string;
+  [key: string]: unknown;
+}
+
+export function getLinkedOpportunityId(
+  item: Pick<Content, "seo_metadata"> | null | undefined,
+): number | null {
+  const raw = (item?.seo_metadata as ContentSeoMetadata | undefined)?.opportunity_id;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+}
+
 // Unified Content interface from cp_content table
 export interface Content {
   id: number;
@@ -263,6 +284,11 @@ export interface ContentInput {
   due_date?: string | null;
   scheduled_date?: string | null;
   scheduled_time?: string | null;
+
+  // JSONB metadata pocket. Currently used by the SEO → editorial bridge to
+  // stash opportunity context (opportunity_id, canonical_query, recommendation,
+  // faq_gaps, top_anchors) so the brief writer has the evidence on hand.
+  seo_metadata?: Record<string, unknown>;
 }
 
 // Content link input for creation/update

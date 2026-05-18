@@ -4,7 +4,8 @@
  *
  * Run with: npx tsx scripts/run-seo-sync.ts
  *
- * Honors SEO_DEV_KEYWORD_LIMIT in .env.local to keep the run cheap.
+ * Honors SEO_DEV_GSC_MAX_ROWS and SEO_DEV_KEYWORD_LIMIT in .env.local to keep
+ * the run fast and cheap.
  */
 import { config } from "dotenv";
 config({ path: ".env.local" });

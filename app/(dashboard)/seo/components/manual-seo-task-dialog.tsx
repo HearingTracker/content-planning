@@ -54,8 +54,26 @@ const INITIAL_FORM: SeoManualQueueInput = {
   priority: "medium",
 };
 
-export function ManualSeoTaskDialog() {
-  const [open, setOpen] = useState(false);
+type ManualSeoTaskDialogProps = {
+  /** Controlled open state. When provided, the trigger button is hidden and
+   * open state is owned by the parent (e.g. ManualSeoQueue empty-state). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Hide the built-in trigger button. Used when the parent renders its own. */
+  hideTrigger?: boolean;
+};
+
+export function ManualSeoTaskDialog({
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
+}: ManualSeoTaskDialogProps = {}) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    if (onOpenChange) onOpenChange(next);
+    else setUncontrolledOpen(next);
+  };
   const [form, setForm] = useState<SeoManualQueueInput>(INITIAL_FORM);
   const mutation = useCreateManualSeoQueueItem();
 
@@ -79,10 +97,12 @@ export function ManualSeoTaskDialog() {
 
   return (
     <>
-      <Button size="sm" className="h-8 gap-1.5" onClick={() => setOpen(true)}>
-        <Plus className="h-3.5 w-3.5" />
-        Add manual task
-      </Button>
+      {!hideTrigger && (
+        <Button size="sm" className="h-8 gap-1.5" onClick={() => setOpen(true)}>
+          <Plus className="h-3.5 w-3.5" />
+          Add manual task
+        </Button>
+      )}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-2xl">

@@ -23,6 +23,7 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
+import { classifyCompetitorAuthority, type CompetitorAuthorityTier } from "./authority";
 import { detectBrand } from "./brand-map";
 import type { Heading, PageContentType } from "./classify";
 
@@ -72,6 +73,40 @@ const CoverageSchema = z.object({
     .array(z.string())
     .describe(
       "1–3 actionable anchor queries the editor should target FIRST. Pick from the actionable anchor list. EXCLUDE any anchor the page already substantively covers AND any that should be ceded to a competing page. For ai_overview_loss, include the non-canonical AIO-suppressed anchor(s) that need source-friendly passage rewrites. Empty array is valid for kind=coverage_strong, wrong_page, or cede (nothing to start with on this page).",
+    ),
+  faq_gaps: z
+    .array(z.object({
+      question: z.string().describe(
+        "Exact question text from the PAA / question-keyword candidate list. Do NOT invent questions; only pick from the candidate list you were given.",
+      ),
+      covered: z.boolean().describe(
+        "true if the page's body or heading outline already answers this question substantively (not just mentions a related word). false if the answer is missing or implicit at best.",
+      ),
+      volume: z
+        .number()
+        .nullable()
+        .describe(
+          "Monthly search volume from the candidate list when known; null for PAA candidates without volume.",
+        ),
+    }))
+    .describe(
+      "For each FAQ candidate (PAA + question-shaped keywords) provided in the input, judge whether the page already covers it. Limit to the candidates given — do not invent questions. Empty array is valid when no candidates were provided.",
+    ),
+  competitor_realism: z
+    .object({
+      verdict: z
+        .enum(["winnable", "snippet_only", "unrealistic"])
+        .describe(
+          "winnable: the page can plausibly reach a top-3 organic slot. snippet_only: a top-3 rank is unlikely but the page can still improve CTR via a snippet/meta rewrite or capture an AIO citation. unrealistic: the SERP is structurally owned by authority sites and/or an AIO that won't move with on-page changes; recommend cede, monitor, or AIO-citation-only work.",
+        ),
+      reasoning: z
+        .string()
+        .describe(
+          "1–2 sentences. Reference at least one specific competitor domain or SERP feature (AIO, authority cluster) you observed in the External SERP context block. No filler.",
+        ),
+    })
+    .describe(
+      "Realism check based on the External SERP context block. Drives the realism strip on the cluster card and downgrades 'go write more' recommendations on authority-locked SERPs.",
     ),
 });
 
@@ -159,8 +194,18 @@ const CoverageSchema = z.object({
 //     hearing aids", "jabra reviews", and brand pricing/model queries should
 //     be routed to their canonical editorial owners, not blocked as login/store
 //     navigation.
+// v19: gap-aware classification. Two new prompt blocks: an External SERP
+//     context block listing the top 5 competitor domains with authority/forum
+//     classification, and an FAQ-gap candidate block sourced from PAA +
+//     question-shaped Labs keywords. Two new schema fields:
+//     `faq_gaps[]` (model judges per-candidate whether the page covers it)
+//     and `competitor_realism` (winnable | snippet_only | unrealistic with
+//     reasoning). A deterministic post-call guardrail downgrades any
+//     coverage_partial / intent_gap classification whose competitor_realism
+//     verdict is unrealistic to actionability="monitor" — prevents "go write
+//     more" recommendations on authority-locked SERPs.
 export const COVERAGE_PROMPT_VERSION =
-  process.env.SEO_COVERAGE_PROMPT_VERSION ?? "v18";
+  process.env.SEO_COVERAGE_PROMPT_VERSION ?? "v19";
 
 function resolveModelId(): string {
   const raw = process.env.SEO_COVERAGE_MODEL ?? process.env.SEO_LABEL_MODEL;
@@ -209,6 +254,8 @@ You will be given:
 - Cannibalization signals — for any cluster member that ALSO ranks in the LIVE top-20 organic SERP via another HearingTracker page, the competitor URL plus the queries that competitor currently wins (its strongest in-cluster rankings on this site). These are SERP-verified, not GSC-noise: a URL listed here is genuinely competing.
 - AI Overview signals — for each anchor query, whether the live SERP shows an AI Overview panel and whether THIS page is cited as one of the AIO sources. AI Overviews suppress organic CTR by ~30–60%; if a majority of cluster impressions sit on AIO-present queries, the standard expected-CTR baseline overstates the achievable ceiling. The cluster summary "AIO on N of M anchors (P% of cluster impressions)" tells you how dominant the AIO suppression is.
 - External canonical signals — for any anchor where a DIFFERENT HearingTracker URL ranks ≤10 in the live SERP, the anchor line carries an "EXTERNAL CANONICAL: <url> at #N" annotation. The canonical owner of the topic already exists on the site; recommending body additions, snippet changes, or start_with for that anchor on THIS page would cannibalize the canonical. Defer to the canonical instead.
+- External SERP context (when present) — the top 5 organic results for the cluster's canonical SERP, each labeled "authority", "forum", or "competitor". Treat the SERP context as a constraint on what's realistically winnable: if ≥3 of the top 5 are "authority" (curated medical / .gov / .edu / mainstream press), assume the rank ceiling is link authority, not on-page work, and prefer "cede" or an AIO-citation-only recommendation. If "forum" results dominate, the queries are experiential and an editorial guide will rarely displace them; consider snippet_ctr or cede.
+- FAQ-gap candidates (when present) — a deduplicated set of People-Also-Ask questions from the SERP plus question-shaped keyword variants (with volume when known). These are not member queries; they are *reader questions adjacent to the cluster*. For each candidate, judge whether the page already answers it substantively. The FAQ-gap output is consumed by editors to drive new FAQ blocks — judge accurately; do not invent questions.
 
 Your job: pick exactly one of these eight editorial states, and write 1–3 short sentences telling the editor what to do. Optimize for meaningful HearingTracker article edits, not generic SEO activity.
 
@@ -257,7 +304,9 @@ Decision guidance:
 - When recommending content additions, the named anchors should be queries the page does NOT already cover well. Use the "topic NN%" semantic score as semantic presence, not as proof of editorial excellence: ≥55% means the topic is already present (do NOT recommend generic new copy for it); 40–55% = marginal (an evidence-backed extension may help); <40% = topic genuinely missing (a new section may be warranted). The "phrase×N in body" count and "in heading" flag are *literal*-string signals — useful for snippet/title decisions but NEVER on their own a reason to claim a topic is missing. If a query has phrase×0 but topic ≥55%, the topic is semantically present; the fix (if any) should be title/meta wording, freshness, stronger evidence, or structure, not duplicate body content. If every high-priority anchor scores ≥55%, prefer coverage_strong (rank well already) or snippet_ctr (rank well + bad CTR).
 - Use the per-query KD, volume, position, and impressions in the member/anchor lines to identify true low-hanging fruit. Call out specific queries by name in the recommendation, framed by why they're the easy wins (low KD, decent volume, already in striking distance).
 - "start_with" output: pick the 1–3 actionable anchor queries the editor should attack FIRST. EXCLUDE any anchor whose topic the page already substantively covers (those need no new content), AND any anchor that should be ceded to a competing page. For ai_overview_loss, use the non-canonical AIO-suppressed anchor(s) that need source-friendly passage rewrites. The recommendation prose and start_with must be consistent — don't say "start with X" in the prose if X is excluded from start_with. Empty start_with is correct for coverage_strong, wrong_page, and cede.
-- Confidence < 0.6 if the page content is too thin to judge or the cluster is ambiguous.`;
+- Confidence < 0.6 if the page content is too thin to judge or the cluster is ambiguous.
+- competitor_realism output: pick "winnable" only when no SERP-structural cap blocks a top-3 result. Pick "snippet_only" when the page can't realistically reach top-3 but can recover CTR via title/meta or capture an AIO citation. Pick "unrealistic" when the SERP is structurally owned by authority sites and/or AIO is the primary click destination. The reasoning sentence MUST reference at least one specific competitor domain or SERP feature you observed in the External SERP context block — generic reasoning ("the SERP is competitive") is not acceptable.
+- faq_gaps output: for each candidate question provided, mark covered=true only if the page (body or headings) substantively answers it — a tangential mention is not coverage. Surface unanswered candidates in the recommendation prose when a real coverage gap exists, prioritized by volume when known. Empty array is valid when no candidates were provided. If covered=true for ALL candidates and the page already covers anchor topics, that is a strong signal for coverage_strong.`;
 
 // ─── Deterministic anchor ranking ───────────────────────────────────────────
 // "Low-hanging fruit" within a cluster: high volume / low difficulty /
@@ -1558,6 +1607,22 @@ export type CoverageInput = {
   expectedCtrPct: number | null;
 
   /**
+   * External gap signals — feed the FAQ-gap surface and the competitor
+   * realism block. All four are optional so callers (tests, ad-hoc reruns)
+   * that don't have them can still classify. The aggregation rules:
+   *  - paaQuestions: unioned across every anchor's live SERP, deduped
+   *  - relatedSearches: same union/dedup, distinct semantic from PAA
+   *  - questionKeywords: top by volume from Labs related-keywords
+   *    (filtered to question-shaped variants), deduped across seeds
+   *  - serpTopOrganic: snapshot of the canonical_query SERP (or first
+   *    anchor with cached data) used for the "realistic to outrank?" hint
+   */
+  paaQuestions?: string[];
+  relatedSearches?: string[];
+  questionKeywords?: Array<{ q: string; volume: number | null }>;
+  serpTopOrganic?: Array<{ rank: number; url: string; domain: string }>;
+
+  /**
    * Deterministic link recommendations generated from the site link graph and
    * query/topic overlap before the LLM call. These are audit data, not model
    * prose, so editors can see why a link was proposed.
@@ -1565,11 +1630,36 @@ export type CoverageInput = {
   internalLinkRecommendations?: InternalLinkRecommendation[];
 };
 
+export type CoverageFaqGap = {
+  question: string;
+  covered: boolean;
+  volume: number | null;
+};
+
+export type CompetitorRealism = {
+  verdict: "winnable" | "snippet_only" | "unrealistic";
+  reasoning: string;
+};
+
 export type CoverageResult = {
   kind: CoverageKind;
   recommendation: string;
   confidence: number;
   startWith: string[];
+  /**
+   * Per-FAQ-candidate coverage judgment from the classifier. Drives the
+   * FAQ-gap block on the cluster card and `cp_seo_opportunities.faq_gaps`.
+   * Empty when the prompt had no candidates (no PAA + no question keywords).
+   */
+  faqGaps: CoverageFaqGap[];
+  /**
+   * "Can we even outrank this SERP?" verdict + 1–2 sentence reasoning.
+   * Powers the realism strip on the cluster card and downgrades
+   * coverage_partial/intent_gap to actionability=monitor when the verdict
+   * is "unrealistic" (see realism guardrail in classifyClusterCoverage).
+   * `null` only on the fail-soft fallback path.
+   */
+  competitorRealism: CompetitorRealism | null;
   modelId: string;
   promptVersion: string;
   cacheKey?: string;
@@ -1881,6 +1971,89 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     `- Hopeless queries (pos ≥10, dominate impressions): ${hopelessLine}`,
   );
 
+  // External SERP context — top-5 organic snapshot with authority/forum
+  // classification. Drives the realism block. Skipped when we didn't cache a
+  // SERP for the canonical_query or any anchor; in that case the model still
+  // has the AIO/hopeless metrics above to work with.
+  const serpTop = (input.serpTopOrganic ?? []).slice(0, 5);
+  if (serpTop.length > 0) {
+    const tieredCounts: Record<CompetitorAuthorityTier, number> = {
+      authority: 0,
+      forum: 0,
+      competitor: 0,
+    };
+    const competitorLines = serpTop.map((r) => {
+      const tier = classifyCompetitorAuthority(r.domain);
+      tieredCounts[tier]++;
+      return `- #${r.rank} [${tier}] ${r.domain}  ${r.url}`;
+    });
+    userParts.push(
+      "",
+      `External SERP context (top ${serpTop.length} organic for the cluster's canonical query):`,
+      ...competitorLines,
+      `Authority share in top ${serpTop.length}: ${tieredCounts.authority}/${serpTop.length}; forum share: ${tieredCounts.forum}/${serpTop.length}.`,
+    );
+  } else {
+    userParts.push(
+      "",
+      "External SERP context: unavailable (no cached SERP for canonical query or anchors). Use AIO + Hopeless lines above to judge realism.",
+    );
+  }
+
+  // FAQ-gap candidates — PAA + question-shaped Labs variants the page might
+  // need to cover. The model judges per-candidate via the schema's faq_gaps
+  // field. Cap displayed candidates so the prompt budget stays under
+  // control on big clusters; the schema accepts any ones the model chooses.
+  const paaInput = input.paaQuestions ?? [];
+  const questionInput = input.questionKeywords ?? [];
+  const FAQ_CANDIDATE_CAP = 24;
+  const faqCandidates: Array<{ q: string; volume: number | null; src: "PAA" | "Q" }> = [];
+  const seenFaqLower = new Set<string>();
+  for (const q of paaInput) {
+    const k = q.trim().toLowerCase();
+    if (!k || seenFaqLower.has(k)) continue;
+    seenFaqLower.add(k);
+    faqCandidates.push({ q, volume: null, src: "PAA" });
+    if (faqCandidates.length >= FAQ_CANDIDATE_CAP) break;
+  }
+  if (faqCandidates.length < FAQ_CANDIDATE_CAP) {
+    for (const item of questionInput) {
+      const k = item.q.trim().toLowerCase();
+      if (!k || seenFaqLower.has(k)) continue;
+      seenFaqLower.add(k);
+      faqCandidates.push({ q: item.q, volume: item.volume, src: "Q" });
+      if (faqCandidates.length >= FAQ_CANDIDATE_CAP) break;
+    }
+  }
+  if (faqCandidates.length > 0) {
+    userParts.push(
+      "",
+      `FAQ-gap candidates (${faqCandidates.length} — judge per-candidate via faq_gaps output; do NOT invent questions outside this list):`,
+      ...faqCandidates.map((c) => {
+        const volPart = c.volume != null ? ` — ${c.volume.toLocaleString()}/mo` : "";
+        return `- [${c.src}] "${c.q}"${volPart}`;
+      }),
+    );
+  } else {
+    userParts.push(
+      "",
+      "FAQ-gap candidates: none provided. Emit faq_gaps as an empty array.",
+    );
+  }
+
+  // Related searches — cheap topic adjacency. Not a per-item judgment;
+  // included so the model can detect when the cluster's reader intent
+  // extends beyond the literal queries (e.g. price queries appearing under a
+  // "best of" cluster).
+  const relatedInput = (input.relatedSearches ?? []).slice(0, 12);
+  if (relatedInput.length > 0) {
+    userParts.push(
+      "",
+      `Related searches (topic adjacency from the canonical SERP):`,
+      ...relatedInput.map((r) => `- "${r}"`),
+    );
+  }
+
   const prompt = userParts.join("\n");
 
   // 60s per-call cap so a single hung request can't block the whole phase.
@@ -1942,6 +2115,54 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   let startWith = (result.object.start_with ?? [])
     .filter((q) => validAnchors.has(q) && !externallyCanonicalized.has(q))
     .slice(0, 3);
+
+  // FAQ gaps — clamp to the candidate set we actually provided so the model
+  // can't smuggle invented questions into the output. Match case-insensitively
+  // since the model may normalize casing.
+  const faqCandidatesLowerToOriginal = new Map<string, { q: string; volume: number | null }>();
+  for (const c of faqCandidates) {
+    faqCandidatesLowerToOriginal.set(c.q.trim().toLowerCase(), { q: c.q, volume: c.volume });
+  }
+  const faqGaps = (result.object.faq_gaps ?? [])
+    .map((g) => {
+      const key = g.question?.trim().toLowerCase();
+      const candidate = key ? faqCandidatesLowerToOriginal.get(key) : null;
+      if (!candidate) return null;
+      return {
+        question: candidate.q,
+        covered: Boolean(g.covered),
+        volume: candidate.volume ?? null,
+      };
+    })
+    .filter((g): g is { question: string; covered: boolean; volume: number | null } => g !== null);
+  // Dedup on question; keep the first occurrence (the model occasionally
+  // emits the same question twice with conflicting covered flags).
+  const faqSeen = new Set<string>();
+  const faqGapsDeduped = faqGaps.filter((g) => {
+    const k = g.question.toLowerCase();
+    if (faqSeen.has(k)) return false;
+    faqSeen.add(k);
+    return true;
+  });
+
+  // Competitor realism — clamp the enum + reasoning length. If no SERP
+  // top-organic was provided, downgrade any "unrealistic" verdict to
+  // "snippet_only" because there's no evidence to support a structural
+  // rank-ceiling claim. When serpTop is present, trust the model.
+  const realismRaw = result.object.competitor_realism;
+  const realismVerdict: "winnable" | "snippet_only" | "unrealistic" = (() => {
+    if (!realismRaw) return "snippet_only";
+    const v = realismRaw.verdict;
+    if (v === "winnable" || v === "snippet_only" || v === "unrealistic") {
+      if (v === "unrealistic" && serpTop.length === 0) return "snippet_only";
+      return v;
+    }
+    return "snippet_only";
+  })();
+  const competitorRealism = {
+    verdict: realismVerdict,
+    reasoning: (realismRaw?.reasoning ?? "").trim().slice(0, 400),
+  };
 
   if (recommendation.length > 650 && AUTHOR_ACTIONABLE_KINDS.has(kind)) {
     confidence = Math.min(confidence, 0.55);
@@ -2160,13 +2381,32 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
   if (allowModerateConfidenceReady) {
     guardrails.push("moderate confidence accepted: concrete non-canonical author task");
   }
-  const editorActionability = deriveEditorActionability({
+  let editorActionability = deriveEditorActionability({
     kind,
     confidence,
     startWith,
     canonicalViolationCount: unsafeCanonicalMentionCount,
     allowModerateConfidenceReady,
   });
+
+  // Realism guardrail. The user's #1 ask: "Half the dismissals came from
+  // realizing we can't rank any better." If the model says the SERP is
+  // unrealistic to outrank AND it still recommended a coverage_partial /
+  // intent_gap (i.e. "go write more"), demote the actionability to monitor
+  // so the editor isn't asked to do content work that won't move rank.
+  // snippet_ctr + ai_overview_loss are spared because their levers (snippet,
+  // AIO citation) can still work on authority-locked SERPs.
+  const REALISM_BLOCKED_KINDS: CoverageKind[] = ["coverage_partial", "intent_gap"];
+  if (
+    competitorRealism.verdict === "unrealistic"
+    && REALISM_BLOCKED_KINDS.includes(kind)
+    && editorActionability !== "blocked"
+  ) {
+    editorActionability = "monitor";
+    guardrails.push(
+      `realism: SERP unrealistic to outrank — downgraded ${kind} to monitor`,
+    );
+  }
   const standaloneArticle = scoreStandaloneArticleCandidate({
     input,
     kind,
@@ -2200,6 +2440,8 @@ export async function classifyClusterCoverage(input: CoverageInput): Promise<Cov
     recommendation,
     confidence,
     startWith,
+    faqGaps: faqGapsDeduped,
+    competitorRealism,
     modelId: selectedModelId,
     promptVersion: COVERAGE_PROMPT_VERSION,
     audit: {
@@ -2348,6 +2590,8 @@ export async function classifyClustersConcurrently(
           recommendation: `Classification failed: ${message.slice(0, 200)}`,
           confidence: 0,
           startWith: [],
+          faqGaps: [],
+          competitorRealism: null,
           modelId: cachedModelId,
           promptVersion: COVERAGE_PROMPT_VERSION,
           audit: {

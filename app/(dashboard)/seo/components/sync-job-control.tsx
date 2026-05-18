@@ -55,7 +55,9 @@ export function SyncJobControl() {
   const { data: role } = useCurrentUserRole();
   const isAdmin = role === "admin";
 
-  const { data: activeJob } = useActiveSyncJob({ enabled: isAdmin });
+  // Active-job poll is enabled for both admin and non-admin so editors can
+  // see "a sync is running" while the trigger button stays admin-only.
+  const { data: activeJob } = useActiveSyncJob({ enabled: true });
   const [trackedJobId, setTrackedJobId] = useState<number | null>(null);
   const { data: trackedJob } = useSyncJob(trackedJobId);
   const trigger = useTriggerSyncJob();
@@ -79,9 +81,14 @@ export function SyncJobControl() {
     }
   }, [trackedJob]);
 
-  if (!isAdmin) return null;
-
   const isActive = job?.status === "pending" || job?.status === "running";
+
+  // Non-admins see the read-only panel during an active sync (so they know
+  // why the dashboard might shift under them) but never the Refresh button.
+  if (!isAdmin) {
+    if (isActive && job) return <SyncJobPanel job={job} />;
+    return null;
+  }
 
   if (!isActive) {
     return (

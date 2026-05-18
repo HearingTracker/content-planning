@@ -334,6 +334,7 @@ export async function createContentItem(
       outline: input.outline,
       internal_links: input.internal_links,
       external_references: input.external_references,
+      seo_metadata: input.seo_metadata ?? {},
     })
     .select("id")
     .single();

@@ -118,6 +118,8 @@ export async function fetchGSCRows(opts: {
   const maxRows = opts.maxRows ?? 100000;
   const out: GSCRow[] = [];
   for (let startRow = 0; startRow < maxRows; startRow += rowLimit) {
+    const requestRowLimit = Math.min(rowLimit, maxRows - startRow);
+    if (requestRowLimit <= 0) break;
     const res = await fetchWithRetry(
       `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(opts.siteUrl)}/searchAnalytics/query`,
       {
@@ -127,7 +129,7 @@ export async function fetchGSCRows(opts: {
           startDate: opts.startDate,
           endDate: opts.endDate,
           dimensions: ["query", "page"],
-          rowLimit,
+          rowLimit: requestRowLimit,
           startRow,
           dataState: "final",
         }),
@@ -137,7 +139,7 @@ export async function fetchGSCRows(opts: {
     const data = (await res.json()) as { rows?: GSCRow[] };
     const rows = data.rows ?? [];
     out.push(...rows);
-    if (rows.length < rowLimit) break;
+    if (rows.length < requestRowLimit) break;
   }
-  return out;
+  return out.slice(0, maxRows);
 }

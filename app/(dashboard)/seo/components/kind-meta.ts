@@ -24,7 +24,7 @@ import {
   Type,
   type LucideIcon,
 } from "lucide-react";
-import type { SeoOppKindKey, SeoSynthesisKindKey } from "../types";
+import type { SeoOppKindKey, SeoPage, SeoSynthesisKindKey } from "../types";
 
 type Tone = "amber" | "blue" | "emerald" | "rose" | "slate";
 
@@ -179,6 +179,34 @@ export const KIND_META: Record<SeoOppKindKey, KindMeta> = {
 export function getKindMeta(key: string | null | undefined): KindMeta {
   if (key && key in KIND_META) return KIND_META[key as SeoOppKindKey];
   return KIND_META.needs_review;
+}
+
+// Per-page count fields on SeoPage, ordered by triage priority (most
+// actionable first). Used to pick a "dominant kind" for the row stripe in
+// the table and the masthead accent in the detail page.
+export const KIND_COUNT_FIELDS: Array<{ key: SeoOppKindKey; field: keyof SeoPage }> = [
+  { key: "wrong_page",       field: "open_wrong_page" },
+  { key: "intent_gap",       field: "open_secondary" },     // legacy view column maps here
+  { key: "coverage_partial", field: "open_supporting" },    // legacy view column maps here
+  { key: "snippet_ctr",      field: "open_snippet_ctr" },
+  { key: "freshness",        field: "open_freshness" },
+  { key: "coverage_strong",  field: "open_primary" },       // legacy view column maps here
+  { key: "needs_review",     field: "open_needs_review" },
+];
+
+/** The most-actionable opportunity kind currently open on this page, or null. */
+export function dominantKind(p: SeoPage): SeoOppKindKey | null {
+  for (const { key, field } of KIND_COUNT_FIELDS) {
+    if (Number(p[field] ?? 0) > 0) return key;
+  }
+  return null;
+}
+
+/** Non-zero open-counts on a page, in priority order. */
+export function nonZeroKindCounts(p: SeoPage): Array<{ key: SeoOppKindKey; count: number }> {
+  return KIND_COUNT_FIELDS
+    .map(({ key, field }) => ({ key, count: Number(p[field] ?? 0) }))
+    .filter((s) => s.count > 0);
 }
 
 // ─── Phase 1C: site-wide synthesis kinds ───────────────────────────────────

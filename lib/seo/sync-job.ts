@@ -30,6 +30,7 @@ import {
   rankAnchorQueries,
   type AnchorCandidate,
   type CompetingPage,
+  type CompetitorRealism,
   type CoverageAnchor,
   type CoverageKind,
   type CoverageInput,
@@ -40,6 +41,7 @@ import {
 import type { PageMeta } from "./classify";
 import { expectedCtr, tokenize } from "./classify";
 import { loadSerps, normalizeUrlForMatch, type SerpData } from "./serp-data";
+import { loadQuestionKeywords, type QuestionKeyword } from "./question-keywords";
 import { embedPageSections, topicCoverageScore } from "./section-embeddings";
 import { SyncJobReporter, type CompletionStats } from "./sync-job-reporter";
 import { runSiteSynthesis } from "./synthesis";
@@ -372,6 +374,53 @@ export async function runSyncJob(jobId: number): Promise<void> {
       `SERP fetch — ${multiPageQueries.length} multi-page + ${anchorQueriesAcrossClusters.length} anchor queries (${serpsToFetch.length} unique), ${serpDataByQuery.size} SERPs available`,
     );
 
+    // Question-shaped keyword expansion. Seeds are each cluster's
+    // canonical_query plus its top 2 anchors (capped so a 10k-cluster sync
+    // doesn't fan out to 50k DataForSEO calls). 30-day cache via
+    // cp_seo_question_keyword_cache absorbs the cost across runs. Feeds the
+    // FAQ-gap surface alongside PAA from the live SERP.
+    const questionSeeds = collectQuestionKeywordSeeds(flatCandidates);
+    let questionCacheHits = 0;
+    let lastQuestionProgressLogged = 0;
+    let lastQuestionProgressReported = 0;
+    if (questionSeeds.length > 0) {
+      await reporter.setProgress(0, questionSeeds.length, "question seeds", "Checking question cache");
+      await reporter.log(`Fetching question-shaped keywords — ${questionSeeds.length} unique seeds…`);
+    }
+    const questionsBySeed = questionSeeds.length > 0
+      ? await loadQuestionKeywords(questionSeeds, "us", {
+          onCacheRead: async (cached, misses) => {
+            questionCacheHits = cached;
+            await reporter.setProgress(
+              cached,
+              cached + misses,
+              "question seeds",
+              misses > 0 ? "Fetching related questions" : "Question cache warm",
+            );
+            await reporter.log(`Question cache — ${cached} hits, ${misses} to fetch live`);
+          },
+          onFetchProgress: async (completed, total) => {
+            const step = Math.max(10, Math.ceil(total / 10));
+            if (completed - lastQuestionProgressLogged >= step || completed === total) {
+              lastQuestionProgressLogged = completed;
+              await reporter.log(`Question fetch progress — ${completed}/${total}`);
+            }
+            if (completed - lastQuestionProgressReported >= step || completed === total) {
+              lastQuestionProgressReported = completed;
+              await reporter.setProgress(
+                questionCacheHits + completed,
+                questionCacheHits + total,
+                "question seeds",
+                "Fetching related questions",
+              );
+            }
+          },
+        })
+      : new Map<string, QuestionKeyword[]>();
+    await reporter.log(
+      `Question keywords — ${questionsBySeed.size} seed sets loaded`,
+    );
+
     // (page, query) → SeoOpportunityRow lookup for "what does this competitor
     // win" annotations. Built once over the full opportunity set so every
     // cluster sees consistent positions.
@@ -399,6 +448,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
       serpDataByQuery,
       oppByPageQuery,
       sectionEmb.embeddings,
+      questionsBySeed,
     );
     await reporter.setProgress(coverageInputs.length, candidateCount, "clusters", "Building coverage inputs");
     const anchorsByCluster = coverageInputs.map((ci) =>
@@ -418,6 +468,18 @@ export async function runSyncJob(jobId: number): Promise<void> {
         return m;
       },
     );
+    // Per-cluster external gap signals snapshot. Persisted to
+    // cp_seo_clusters.external_gap_signals so the drilldown UI can render
+    // FAQ-gap + realism without re-computing, and the next sync can pick
+    // up the previous snapshot when a cluster gets re-matched but the SERP
+    // didn't refresh.
+    const gapSignalsByCluster = coverageInputs.map((ci) => ({
+      paa: ci.paaQuestions ?? [],
+      related_searches: ci.relatedSearches ?? [],
+      question_keywords: ci.questionKeywords ?? [],
+      serp_top_organic: ci.serpTopOrganic ?? [],
+    }));
+
     // Per-anchor external canonicals — only anchors whose live SERP shows a
     // different HT URL ranking ≤10 produce a row here. The synthesizer reads
     // this column to detect fully_ceded_page (lib/seo/synthesis.ts).
@@ -508,6 +570,7 @@ export async function runSyncJob(jobId: number): Promise<void> {
       anchorExternalCanonicalsByCluster,
       cannibalByCluster,
       topicScoresByCluster,
+      gapSignalsByCluster,
       onPageProgress: (completed, total) =>
         reporter.setProgress(completed, total, "pages", "Writing pages and clusters"),
     });
@@ -740,7 +803,7 @@ async function loadExistingClustersByPage(
   const { data, error } = await supabase
     .from("cp_seo_clusters")
     .select(
-      "id, page, label, current_centroid, original_centroid, is_branded, brand, retailer, product_family, coverage_kind, coverage_recommendation, coverage_confidence, coverage_model, coverage_prompt_v, coverage_input_digest, coverage_classified_at, start_with_queries, coverage_cache_key, coverage_classified_in_job_id, cp_seo_query_findings(query)",
+      "id, page, label, current_centroid, original_centroid, is_branded, brand, retailer, product_family, coverage_kind, coverage_recommendation, coverage_confidence, coverage_model, coverage_prompt_v, coverage_input_digest, coverage_classified_at, start_with_queries, coverage_cache_key, coverage_classified_in_job_id, faq_gaps, competitor_realism, cp_seo_query_findings(query)",
     )
     .in("page", pages)
     .is("archived_at", null);
@@ -761,6 +824,8 @@ async function loadExistingClustersByPage(
     start_with_queries: string[] | null;
     coverage_cache_key: string | null;
     coverage_classified_in_job_id: number | null;
+    faq_gaps: Array<{ question: string; covered: boolean; volume: number | null }> | null;
+    competitor_realism: { verdict: string; reasoning: string } | null;
     cp_seo_query_findings: { query: string }[] | null;
   }>) {
     const ex: ExistingClusterForMatch = {
@@ -782,6 +847,8 @@ async function loadExistingClustersByPage(
       start_with_queries: row.start_with_queries,
       coverage_cache_key: row.coverage_cache_key,
       coverage_classified_in_job_id: row.coverage_classified_in_job_id,
+      faq_gaps: row.faq_gaps,
+      competitor_realism: row.competitor_realism,
       member_queries: new Set((row.cp_seo_query_findings ?? []).map((f) => f.query)),
     };
     const list = byPage.get(row.page) ?? [];
@@ -1006,11 +1073,38 @@ function coverageResultFromReusableCluster(args: {
       : [...existingGuardrails, reuseGuardrail],
   } as CoverageResult["audit"];
 
+  // Rehydrate faq_gaps + competitor_realism from the cluster row. They were
+  // written by the previous sync's classifyClusterCoverage call; pass them
+  // through so the downstream upsert preserves them (otherwise reuse would
+  // overwrite the gap-aware outputs with empty defaults).
+  const reusedFaqGaps = Array.isArray(existing.faq_gaps)
+    ? existing.faq_gaps.filter(
+        (g): g is { question: string; covered: boolean; volume: number | null } =>
+          !!g
+          && typeof g.question === "string"
+          && typeof g.covered === "boolean",
+      )
+    : [];
+  const reusedRealism: CompetitorRealism | null = (() => {
+    const r = existing.competitor_realism;
+    if (!r || typeof r !== "object") return null;
+    const v = (r as { verdict?: string }).verdict;
+    if (v === "winnable" || v === "snippet_only" || v === "unrealistic") {
+      const reasoning = typeof (r as { reasoning?: string }).reasoning === "string"
+        ? (r as { reasoning: string }).reasoning
+        : "";
+      return { verdict: v, reasoning };
+    }
+    return null;
+  })();
+
   return {
     kind: existing.coverage_kind,
     recommendation: existing.coverage_recommendation,
     confidence,
     startWith: existing.start_with_queries ?? [],
+    faqGaps: reusedFaqGaps,
+    competitorRealism: reusedRealism,
     modelId: existing.coverage_model ?? classifierConfig.modelId,
     promptVersion: existing.coverage_prompt_v ?? classifierConfig.promptVersion,
     cacheKey,
@@ -1100,6 +1194,19 @@ async function upsertEverything(
      * cp_seo_query_findings so the UI can color-code chips by coverage tier.
      */
     topicScoresByCluster: Map<string, number>[];
+    /**
+     * One per flatCandidates entry — aggregated PAA + related searches +
+     * question-shaped keywords + SERP top-organic snapshot. Persisted to
+     * cp_seo_clusters.external_gap_signals; downstream consumers (FAQ-gap
+     * UI, realism strip, coverage classifier) read it directly from the
+     * cluster row to avoid re-fetching SERP data.
+     */
+    gapSignalsByCluster: Array<{
+      paa: string[];
+      related_searches: string[];
+      question_keywords: Array<{ q: string; volume: number | null }>;
+      serp_top_organic: Array<{ rank: number; url: string; domain: string }>;
+    }>;
     onPageProgress?: (completed: number, total: number) => Promise<void>;
   },
 ): Promise<{ created: number; matched: number; archived: number; opportunities: number }> {
@@ -1142,6 +1249,12 @@ async function upsertEverything(
       const anchors = ctx.anchorsByCluster[labelIdx] ?? [];
       const anchorExternalCanonicals = ctx.anchorExternalCanonicalsByCluster[labelIdx] ?? [];
       const cannibal = ctx.cannibalByCluster[labelIdx] ?? {};
+      const gapSignals = ctx.gapSignalsByCluster[labelIdx] ?? {
+        paa: [],
+        related_searches: [],
+        question_keywords: [],
+        serp_top_organic: [],
+      };
       const topicScores = ctx.topicScoresByCluster[labelIdx] ?? new Map<string, number>();
       const prioritization = computeClusterPrioritization({
         pageRow: pageRowsByPage.get(page) ?? null,
@@ -1200,6 +1313,9 @@ async function upsertEverything(
         anchor_external_canonicals: anchorExternalCanonicals,
         start_with_queries: cov?.startWith ?? [],
         cannibal_overlap: cannibal,
+        external_gap_signals: gapSignals,
+        faq_gaps: cov?.faqGaps ?? [],
+        competitor_realism: cov?.competitorRealism ?? null,
         last_seen_at: now,
         archived_at: null,
       };
@@ -1694,6 +1810,7 @@ function buildCoverageInputs(
   serpDataByQuery: Map<string, SerpData>,
   oppByPageQuery: Map<string, Map<string, SeoOpportunityRow>>,
   pageSectionEmbeddings: Map<string, number[][]>,
+  questionsBySeed: Map<string, QuestionKeyword[]>,
 ): CoverageInput[] {
   const out: CoverageInput[] = [];
   const pageLinkProfiles = buildPageLinkProfiles(pageMetas);
@@ -1812,6 +1929,23 @@ function buildCoverageInputs(
     // the two-queries-at-49%+47% case both fall out naturally.
     const hopelessQueries = computeHopelessQueries(c.cluster.members, totalImpressions);
 
+    // Aggregate external gap signals for this cluster — PAA + related searches
+    // unioned across every anchor's live SERP, plus question-shaped variants
+    // from the related-keywords API for canonical_query + top 2 anchors.
+    // Dedup case-insensitively but preserve first-seen casing for display.
+    const gapSignals = aggregateExternalGapSignals({
+      page: c.page,
+      pageTitle: meta?.title ?? null,
+      pageContentType: meta?.contentType ?? "unknown",
+      brand: c.cluster.brand,
+      retailer: c.cluster.retailer,
+      productFamily: c.cluster.product_family,
+      canonicalQuery: c.cluster.canonical_query,
+      anchorQueries: anchors.map((a) => a.query),
+      serpDataByQuery,
+      questionsBySeed,
+    });
+
     out.push({
       page: c.page,
       pageTitle: meta?.title ?? null,
@@ -1837,6 +1971,10 @@ function buildCoverageInputs(
       avgPosition: c.aggregates.avg_position,
       weightedCtrPct: c.aggregates.weighted_ctr_pct,
       expectedCtrPct: c.aggregates.expected_ctr_pct,
+      paaQuestions: gapSignals.paa,
+      relatedSearches: gapSignals.related_searches,
+      questionKeywords: gapSignals.question_keywords,
+      serpTopOrganic: gapSignals.serp_top_organic,
       internalLinkRecommendations: buildInternalLinkRecommendations({
         currentPage: c.page,
         members,
@@ -2148,6 +2286,250 @@ function collectAnchorQueries(flatCandidates: PageCandidate[]): string[] {
     for (const a of rankAnchorQueries(candidates, 5)) seen.add(a.query);
   }
   return [...seen];
+}
+
+// Cap on questions we forward to the classifier per cluster. The prompt
+// budget can't fit 100+; 20 is enough to surface a meaningful FAQ-gap list.
+const QUESTION_KEYWORD_FORWARD_CAP = 20;
+
+// Per-cluster aggregation of external gap signals. Unions PAA + related
+// searches across every anchor's live SERP, joins in question-shaped Labs
+// variants for canonical_query + top 2 anchors, and freezes the top-organic
+// list of the canonical_query's SERP for the realism block.
+type ExternalGapSignals = {
+  paa: string[];
+  related_searches: string[];
+  question_keywords: QuestionKeyword[];
+  // Top-organic results for the cluster's canonical_query SERP — drives the
+  // SERP context disclosure on the cluster card. Empty array when the SERP
+  // didn't cache (e.g. an API failure or a query whose volume kept it out
+  // of the anchor set).
+  serp_top_organic: Array<{ rank: number; url: string; domain: string }>;
+};
+
+const FAQ_MEDICAL_DRIFT_TOKENS = new Set([
+  "tinnitus",
+  "ringing",
+  "muffled",
+  "otosclerosis",
+  "meniere",
+  "meniere's",
+  "menieres",
+  "vertigo",
+  "infection",
+  "wax",
+  "earwax",
+  "sudden",
+  "frequency",
+  "corrected",
+  "correct",
+  "enemy",
+  "silent",
+  "m3",
+  "t3",
+]);
+
+const FAQ_ENTITY_DRIFT_TOKENS = new Set([
+  "amazon",
+  "costco",
+  "walmart",
+  "miracle",
+  "miracle-ear",
+  "phonak",
+  "oticon",
+  "widex",
+  "signia",
+  "resound",
+  "starkey",
+  "jabra",
+  "sony",
+  "lexie",
+  "eargo",
+  "audicus",
+  "mdhearing",
+  "mdhearingaid",
+  "audien",
+  "rexton",
+  "sennheiser",
+]);
+
+const FAQ_AID_TOKENS = new Set(["aid", "aids"]);
+const FAQ_GENERIC_CONTEXT_TOKENS = new Set([
+  "hearing",
+  "aid",
+  "aids",
+  "best",
+  "review",
+  "reviews",
+  "guide",
+  "page",
+]);
+
+type FaqCandidateContext = {
+  tokens: Set<string>;
+  specificTokens: Set<string>;
+  pageContentType: PageMeta["contentType"];
+};
+
+function buildFaqCandidateContext(args: {
+  page: string;
+  pageTitle: string | null;
+  pageContentType: PageMeta["contentType"];
+  brand: string | null;
+  retailer: string | null;
+  productFamily: string | null;
+  canonicalQuery: string;
+  anchorQueries: string[];
+}): FaqCandidateContext {
+  const tokens = new Set<string>();
+  for (const value of [
+    args.page.replace(/[/-]/g, " "),
+    args.pageTitle,
+    args.brand,
+    args.retailer,
+    args.productFamily,
+    args.canonicalQuery,
+    ...args.anchorQueries,
+  ]) {
+    for (const token of tokenize(value)) tokens.add(token);
+  }
+  const specificTokens = new Set(
+    [...tokens].filter((token) => !FAQ_GENERIC_CONTEXT_TOKENS.has(token)),
+  );
+  return { tokens, specificTokens, pageContentType: args.pageContentType };
+}
+
+function isRelevantFaqCandidate(question: string, context: FaqCandidateContext): boolean {
+  const qTokens = new Set(tokenize(question));
+  if (qTokens.size === 0) return false;
+
+  const medicalDrift = [...qTokens].filter((token) => FAQ_MEDICAL_DRIFT_TOKENS.has(token));
+  if (medicalDrift.length > 0 && medicalDrift.every((token) => !context.tokens.has(token))) {
+    return false;
+  }
+
+  const entityDrift = [...qTokens].filter((token) => FAQ_ENTITY_DRIFT_TOKENS.has(token));
+  if (
+    entityDrift.length > 0 &&
+    entityDrift.every((token) => !context.tokens.has(token)) &&
+    context.pageContentType !== "brand_page" &&
+    context.pageContentType !== "product_review" &&
+    context.pageContentType !== "comparison_page"
+  ) {
+    return false;
+  }
+
+  const hasAidTerm = [...qTokens].some((token) => FAQ_AID_TOKENS.has(token));
+  if (hasAidTerm) return true;
+
+  const specificOverlap = [...qTokens]
+    .filter((token) => context.specificTokens.has(token))
+    .length;
+  if (specificOverlap >= 1 && context.specificTokens.size > 0) return true;
+
+  const broadOverlap = [...qTokens]
+    .filter((token) => context.tokens.has(token))
+    .length;
+  return broadOverlap >= 2;
+}
+
+function aggregateExternalGapSignals(args: {
+  page: string;
+  pageTitle: string | null;
+  pageContentType: PageMeta["contentType"];
+  brand: string | null;
+  retailer: string | null;
+  productFamily: string | null;
+  canonicalQuery: string;
+  anchorQueries: string[];
+  serpDataByQuery: Map<string, SerpData>;
+  questionsBySeed: Map<string, QuestionKeyword[]>;
+}): ExternalGapSignals {
+  const context = buildFaqCandidateContext(args);
+  const paaSeen = new Map<string, string>();   // lowercase → first-seen casing
+  const relatedSeen = new Map<string, string>();
+  const querySources = new Set<string>([args.canonicalQuery, ...args.anchorQueries]);
+  for (const q of querySources) {
+    if (!q) continue;
+    const serp = args.serpDataByQuery.get(q);
+    if (!serp) continue;
+    for (const p of serp.paa_questions) {
+      const k = p.trim().toLowerCase();
+      if (!k || paaSeen.has(k)) continue;
+      if (!isRelevantFaqCandidate(p, context)) continue;
+      paaSeen.set(k, p);
+    }
+    for (const r of serp.related_searches) {
+      const k = r.trim().toLowerCase();
+      if (!k || relatedSeen.has(k)) continue;
+      relatedSeen.set(k, r);
+    }
+  }
+
+  // Question keywords — union across seeds, dedup, prefer higher volume.
+  const questionsByQ = new Map<string, QuestionKeyword>();
+  for (const seed of querySources) {
+    if (!seed) continue;
+    const set = args.questionsBySeed.get(seed) ?? [];
+    for (const item of set) {
+      const k = item.q.trim().toLowerCase();
+      if (!k) continue;
+      if (!isRelevantFaqCandidate(item.q, context)) continue;
+      const existing = questionsByQ.get(k);
+      if (!existing) {
+        questionsByQ.set(k, item);
+        continue;
+      }
+      // Keep the entry with higher volume (null < 0 < any number).
+      const existingVol = existing.volume ?? -1;
+      const newVol = item.volume ?? -1;
+      if (newVol > existingVol) questionsByQ.set(k, item);
+    }
+  }
+  const questionsList = [...questionsByQ.values()]
+    .sort((a, b) => (b.volume ?? -1) - (a.volume ?? -1))
+    .slice(0, QUESTION_KEYWORD_FORWARD_CAP);
+
+  // SERP top-organic snapshot for the canonical_query — falls back to the
+  // first anchor with cached SERP data so the realism strip still has
+  // something to show when canonical_query didn't cache.
+  let serpTop: ExternalGapSignals["serp_top_organic"] = [];
+  const candidates = [args.canonicalQuery, ...args.anchorQueries];
+  for (const q of candidates) {
+    const serp = args.serpDataByQuery.get(q);
+    if (serp && serp.top_organic.length > 0) {
+      serpTop = serp.top_organic.slice(0, 10);
+      break;
+    }
+  }
+
+  return {
+    paa: [...paaSeen.values()],
+    related_searches: [...relatedSeen.values()],
+    question_keywords: questionsList,
+    serp_top_organic: serpTop,
+  };
+}
+
+// Seeds for loadQuestionKeywords — each cluster's canonical_query plus its
+// top 2 anchors. Capping at 2 anchors (vs 5 for SERP fetch) keeps the
+// fanout reasonable; PAA from the live SERP fills in the per-anchor
+// question signal, and Labs related-keywords are most useful at the
+// cluster-topic level rather than per striking-distance variant.
+function collectQuestionKeywordSeeds(flatCandidates: PageCandidate[]): string[] {
+  const seen = new Set<string>();
+  for (const c of flatCandidates) {
+    if (c.cluster.canonical_query) seen.add(c.cluster.canonical_query);
+    const candidates: AnchorCandidate[] = c.cluster.members.map((m) => ({
+      query: m.query,
+      position: m.source.position,
+      volume: m.source.volume,
+      kd: m.source.kd,
+    }));
+    const topAnchors = rankAnchorQueries(candidates, 2);
+    for (const a of topAnchors) seen.add(a.query);
+  }
+  return [...seen].filter(Boolean);
 }
 
 /** (page, query) → opportunity row index for fast win-lookup. */

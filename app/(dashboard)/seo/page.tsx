@@ -1,11 +1,18 @@
 "use client";
 
+import { useState } from "react";
 import { SeoPagesTable } from "./components/seo-pages-table";
 import { SyncJobControl } from "./components/sync-job-control";
 import { ManualSeoQueue } from "./components/manual-seo-queue";
 import { ManualSeoTaskDialog } from "./components/manual-seo-task-dialog";
+import { Button } from "@/components/ui/button";
+import { Plus } from "lucide-react";
 
 export default function SeoPage() {
+  // Manual-task dialog is controlled here so both the toolbar button (top-right)
+  // and the queue's empty-state CTA can open it.
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+
   return (
     <div className="space-y-4 min-w-0">
       <div className="flex flex-col items-start justify-between gap-3 sm:flex-row">
@@ -16,11 +23,19 @@ export default function SeoPage() {
           the most missed clicks; click any page for its per-cluster breakdown.
         </p>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <ManualSeoTaskDialog />
+          <Button size="sm" className="h-8 gap-1.5" onClick={() => setTaskDialogOpen(true)}>
+            <Plus className="h-3.5 w-3.5" />
+            Add manual task
+          </Button>
+          <ManualSeoTaskDialog
+            open={taskDialogOpen}
+            onOpenChange={setTaskDialogOpen}
+            hideTrigger
+          />
           <SyncJobControl />
         </div>
       </div>
-      <ManualSeoQueue />
+      <ManualSeoQueue onAddTask={() => setTaskDialogOpen(true)} />
       <SeoPagesTable />
     </div>
   );
