@@ -1,6 +1,7 @@
 "use client";
 
 import { Calendar, ExternalLink, FileText, Newspaper, Plus, RefreshCw, RotateCcw } from "lucide-react";
+import NextLink from "next/link";
 import { Button } from "@/components/ui/button";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
@@ -140,6 +141,7 @@ function ManualQueueRow({ item }: { item: SeoManualQueueItem }) {
   const taskMeta = TASK_META[item.task_type];
   const priorityMeta = PRIORITY_META[item.priority];
   const { Icon } = taskMeta;
+  const analysisHref = getAnalysisHref(item);
 
   return (
     <li className="grid gap-3 px-4 py-3 sm:grid-cols-[1fr_auto]">
@@ -206,6 +208,42 @@ function ManualQueueRow({ item }: { item: SeoManualQueueItem }) {
           <span>
             added {formatDistanceToNow(new Date(item.created_at), { addSuffix: true })}
           </span>
+          {analysisHref && (
+            <>
+              <span className="opacity-50">/</span>
+              <NextLink
+                href={analysisHref}
+                className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
+              >
+                SEO analysis
+              </NextLink>
+            </>
+          )}
+          {item.linked_content_item && (
+            <>
+              <span className="opacity-50">/</span>
+              <NextLink
+                href={`/content?item=${item.linked_content_item.id}`}
+                className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
+              >
+                content draft
+              </NextLink>
+            </>
+          )}
+          {item.linked_content_item?.storyblok_url && (
+            <>
+              <span className="opacity-50">/</span>
+              <a
+                href={item.linked_content_item.storyblok_url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
+              >
+                SB draft
+                <ExternalLink className="h-3 w-3 opacity-60" />
+              </a>
+            </>
+          )}
         </div>
 
         {item.evidence && (
@@ -220,6 +258,19 @@ function ManualQueueRow({ item }: { item: SeoManualQueueItem }) {
       </div>
     </li>
   );
+}
+
+function getAnalysisHref(item: SeoManualQueueItem): string | null {
+  if (item.linked_opportunity_id != null && item.page) {
+    return `/seo${item.page}?c=${item.linked_opportunity_id}`;
+  }
+  if (item.page) {
+    return `/seo${item.page}`;
+  }
+  if (item.linked_synthesis_finding_id != null) {
+    return "/seo/site";
+  }
+  return null;
 }
 
 function ManualTaskStatusSelect({ id, value }: { id: number; value: SeoOppStatus }) {

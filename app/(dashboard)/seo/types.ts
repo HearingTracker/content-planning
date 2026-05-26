@@ -37,6 +37,11 @@ export type SeoManualQueueItem = {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+  linked_content_item: {
+    id: number;
+    title: string;
+    storyblok_url: string | null;
+  } | null;
 };
 
 export type SeoManualQueueInput = {
@@ -200,6 +205,13 @@ export type SeoPage = {
   top_kind: SeoOppKindKey | null;
   top_member_count: number | null;
   top_score: number | null;
+
+  // Page-level workflow rollup across non-archived SEO opportunities.
+  task_status: SeoOppStatus | null;
+  task_open_count: number;
+  task_in_progress_count: number;
+  task_done_count: number;
+  task_dismissed_count: number;
 };
 
 /** Cluster-level opportunity row, as returned by getSeoOpportunities(). */

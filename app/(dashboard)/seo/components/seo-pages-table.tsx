@@ -48,7 +48,7 @@ import {
   nonZeroKindCounts,
 } from "./kind-meta";
 import { cn } from "@/lib/utils";
-import type { SeoOppKindKey, SeoPage } from "../types";
+import type { SeoOppKindKey, SeoOppStatus, SeoPage } from "../types";
 
 const KIND_KEYS = Object.keys(KIND_META) as SeoOppKindKey[];
 
@@ -56,6 +56,7 @@ const KIND_KEYS = Object.keys(KIND_META) as SeoOppKindKey[];
 // param is a single string and we don't need a custom parser for the SortingState.
 const SORT_OPTIONS = [
   { value: "earnings_90d:desc",      label: "Earnings (high → low)",    sortKey: "earnings_90d",      desc: true  },
+  { value: "task_status:asc",        label: "Task status (open first)",  sortKey: "task_status_rank",  desc: false },
   { value: "open_missed_clicks:desc",label: "Missed clicks (high → low)", sortKey: "open_missed_clicks", desc: true },
   { value: "max_score:desc",         label: "Priority score (high → low)", sortKey: "max_score",       desc: true  },
   { value: "avg_position:asc",       label: "Avg rank (best first)",      sortKey: "avg_position",    desc: false },
@@ -65,6 +66,32 @@ const SORT_OPTIONS = [
 type SortValue = (typeof SORT_OPTIONS)[number]["value"];
 const SORT_VALUES = SORT_OPTIONS.map((o) => o.value) as readonly SortValue[];
 const DEFAULT_SORT: SortValue = "earnings_90d:desc";
+
+const STATUS_SORT_RANK: Record<SeoOppStatus, number> = {
+  open: 0,
+  in_progress: 1,
+  done: 2,
+  dismissed: 3,
+};
+
+const STATUS_META: Record<SeoOppStatus, { label: string; className: string }> = {
+  open: {
+    label: "Open",
+    className: "bg-blue-50 text-blue-800 ring-blue-200",
+  },
+  in_progress: {
+    label: "In progress",
+    className: "bg-amber-50 text-amber-800 ring-amber-200",
+  },
+  done: {
+    label: "Done",
+    className: "bg-emerald-50 text-emerald-800 ring-emerald-200",
+  },
+  dismissed: {
+    label: "Dismissed",
+    className: "bg-zinc-50 text-zinc-600 ring-zinc-200",
+  },
+};
 
 function sortValueToState(value: SortValue): SortingState {
   const opt = SORT_OPTIONS.find((o) => o.value === value) ?? SORT_OPTIONS[0];
@@ -103,6 +130,13 @@ export function SeoPagesTable() {
       {
         id: "max_score",
         accessorFn: (row) => Number(row.max_score ?? 0),
+      },
+      {
+        id: "task_status_rank",
+        accessorFn: (row) => {
+          const status = pageTaskStatus(row);
+          return status ? STATUS_SORT_RANK[status] : Number.MAX_SAFE_INTEGER;
+        },
       },
       {
         id: "avg_position",
@@ -749,6 +783,7 @@ function PageRow({
                 <span className="font-mono">{p.meta_source}</span>
               </>
             )}
+            <TaskStatusBadge page={p} />
           </div>
         </div>
 
@@ -822,6 +857,49 @@ function PageRow({
   );
 }
 
+function pageTaskStatus(p: SeoPage): SeoOppStatus | null {
+  if (
+    p.task_status === "open" ||
+    p.task_status === "in_progress" ||
+    p.task_status === "done" ||
+    p.task_status === "dismissed"
+  ) {
+    return p.task_status;
+  }
+  return Number(p.open_clusters ?? p.open_opportunities ?? 0) > 0 ? "open" : null;
+}
+
+function pageTaskStatusCount(p: SeoPage, status: SeoOppStatus): number {
+  if (status === "open") {
+    return Number(p.task_open_count ?? p.open_clusters ?? p.open_opportunities ?? 0);
+  }
+  if (status === "in_progress") return Number(p.task_in_progress_count ?? 0);
+  if (status === "done") return Number(p.task_done_count ?? 0);
+  return Number(p.task_dismissed_count ?? 0);
+}
+
+function TaskStatusBadge({ page }: { page: SeoPage }) {
+  const status = pageTaskStatus(page);
+  if (!status) return null;
+  const meta = STATUS_META[status];
+  const count = pageTaskStatusCount(page, status);
+
+  return (
+    <>
+      <span aria-hidden className="opacity-40">·</span>
+      <span
+        className={cn(
+          "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset",
+          meta.className,
+        )}
+      >
+        {count > 0 ? `${count} ` : ""}
+        {meta.label.toLowerCase()}
+      </span>
+    </>
+  );
+}
+
 // ─── Kind breakdown bar ────────────────────────────────────────────────────
 
 function KindBreakdownBar({ p }: { p: SeoPage }) {
@@ -877,4 +955,3 @@ function KindBreakdownBar({ p }: { p: SeoPage }) {
     </div>
   );
 }
-

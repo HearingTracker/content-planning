@@ -149,6 +149,51 @@ function sortManualQueue(items: SeoManualQueueItem[]): SeoManualQueueItem[] {
   });
 }
 
+function numericId(value: unknown): number | null {
+  const id = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(id) ? id : null;
+}
+
+async function attachLinkedContentItems(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  items: SeoManualQueueItem[],
+): Promise<SeoManualQueueItem[]> {
+  const contentIds = [
+    ...new Set(
+      items
+        .map((item) => numericId(item.linked_content_item_id))
+        .filter((id): id is number => id != null),
+    ),
+  ];
+  if (contentIds.length === 0) {
+    return items.map((item) => ({ ...item, linked_content_item: null }));
+  }
+
+  const { data, error } = await supabase
+    .from("cp_content")
+    .select("id, title, storyblok_url")
+    .in("id", contentIds);
+  if (error) throw new Error(error.message);
+
+  const byId = new Map<number, SeoManualQueueItem["linked_content_item"]>();
+  for (const row of (data ?? []) as Array<{
+    id: number;
+    title: string;
+    storyblok_url: string | null;
+  }>) {
+    byId.set(row.id, {
+      id: row.id,
+      title: row.title,
+      storyblok_url: row.storyblok_url,
+    });
+  }
+
+  return items.map((item) => ({
+    ...item,
+    linked_content_item: byId.get(numericId(item.linked_content_item_id) ?? -1) ?? null,
+  }));
+}
+
 function asObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -346,7 +391,8 @@ export async function getManualSeoQueueItems(): Promise<SeoManualQueueItem[]> {
     .order("created_at", { ascending: false })
     .limit(100);
   if (error) throw new Error(error.message);
-  return sortManualQueue((data ?? []) as SeoManualQueueItem[]);
+  const items = (data ?? []) as SeoManualQueueItem[];
+  return sortManualQueue(await attachLinkedContentItems(supabase, items));
 }
 
 export async function createManualSeoQueueItem(input: SeoManualQueueInput): Promise<void> {
