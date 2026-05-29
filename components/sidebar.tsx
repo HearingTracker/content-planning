@@ -8,6 +8,7 @@ import {
   FileText,
   Lightbulb,
   Settings,
+  Bell,
   LogOut,
   Users,
   Package,
@@ -47,6 +48,7 @@ const navigation = [
   { name: "Strategy", href: "/strategy", icon: Lightbulb },
   { name: "SEO", href: "/seo", icon: TrendingUp },
   { name: "Settings", href: "/settings", icon: Settings },
+  { name: "Notifications", href: "/settings/notifications", icon: Bell },
 ];
 
 const adminNavigation = [

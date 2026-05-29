@@ -1,4 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
+import Link from "next/link";
+import { Bell, ChevronRight } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -6,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { ProfileForm } from "./components/profile-form";
 import { getProfile } from "./actions";
 
@@ -42,6 +45,24 @@ export default async function SettingsPage() {
           {profile && user?.email && (
             <ProfileForm profile={profile} email={user.email} />
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Notification Settings</CardTitle>
+          <CardDescription>
+            Manage browser, email, assignment, comment, and daily digest notifications
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild variant="outline">
+            <Link href="/settings/notifications">
+              <Bell className="size-4" />
+              Notifications
+              <ChevronRight className="size-4" />
+            </Link>
+          </Button>
         </CardContent>
       </Card>
 
