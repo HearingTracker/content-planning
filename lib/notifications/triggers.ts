@@ -1,7 +1,6 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { sendPushNotificationToMany } from "./send-push";
 import { sendNotificationEmail } from "@/lib/email/send";
 import type { NotificationType, EventPreferences } from "./types";
@@ -18,17 +17,23 @@ interface NotifyOptions {
   excludeActorFromRecipients?: boolean;
 }
 
-interface UserPrefs {
+export interface UserPrefs {
   shouldNotify: boolean;
   browserEnabled: boolean;
   emailEnabled: boolean;
 }
 
-async function getUserNotificationPrefs(
+// Supabase client type shared by the cookie-scoped server client and the
+// service-role admin client. Background callers (cron flush) have no user
+// session, so they pass createAdminClient() to bypass RLS.
+export type DbClient = Awaited<ReturnType<typeof createClient>>;
+
+export async function getUserNotificationPrefs(
   userId: string,
-  eventType: NotificationType
+  eventType: NotificationType,
+  client?: DbClient
 ): Promise<UserPrefs> {
-  const supabase = await createClient();
+  const supabase = client ?? (await createClient());
 
   const { data: prefs } = await supabase
     .from("notification_preferences")
@@ -55,8 +60,11 @@ async function getUserNotificationPrefs(
   };
 }
 
-async function createNotifications(options: NotifyOptions): Promise<void> {
-  const supabase = await createClient();
+async function createNotifications(
+  options: NotifyOptions,
+  client?: DbClient
+): Promise<void> {
+  const supabase = client ?? (await createClient());
 
   const recipientsToNotify = options.excludeActorFromRecipients
     ? options.recipientIds.filter((id) => id !== options.actorId)
@@ -68,7 +76,11 @@ async function createNotifications(options: NotifyOptions): Promise<void> {
   const recipientsForEmail: string[] = [];
 
   for (const recipientId of recipientsToNotify) {
-    const prefs = await getUserNotificationPrefs(recipientId, options.notificationType);
+    const prefs = await getUserNotificationPrefs(
+      recipientId,
+      options.notificationType,
+      supabase
+    );
     if (prefs.shouldNotify) {
       recipientsWithPermission.push(recipientId);
       if (prefs.browserEnabled) {
@@ -161,7 +173,15 @@ async function sendEmailNotifications(
   await Promise.all(
     Array.from(emailMap.entries()).map(async ([, email]) => {
       try {
-        await sendNotificationEmail(email, title, body || "", fullActionUrl);
+        const result = await sendNotificationEmail(
+          email,
+          title,
+          body || "",
+          fullActionUrl
+        );
+        if (!result.success) {
+          console.error(`[Email] Failed sending to ${email}:`, result.error);
+        }
       } catch (err) {
         console.error(`[Email] Error sending to ${email}:`, err);
       }
@@ -185,10 +205,14 @@ export async function notifyComment(
   const supabase = await createClient();
 
   // Get all users assigned to this content item
-  const { data: assignments } = await supabase
+  const { data: assignments, error: assignmentsError } = await supabase
     .from("cp_content_assignments")
     .select("user_id")
-    .eq("content_item_id", contentItemId);
+    .eq("content_id", contentItemId);
+
+  if (assignmentsError) {
+    console.error("Error loading assignments for comment notification:", assignmentsError);
+  }
 
   // Dedupe assigned user IDs
   const assignedUserIds = [...new Set(assignments?.map((a) => a.user_id) || [])];
@@ -272,16 +296,20 @@ export async function notifyAssignment(
   contentItemId: number,
   contentTitle: string,
   role: string,
-  assignedBy: string
+  assignedBy: string,
+  client?: DbClient
 ): Promise<void> {
-  await createNotifications({
-    recipientIds: [assignedUserId],
-    notificationType: "assignment",
-    title: `You were assigned as ${role} on "${contentTitle}"`,
-    body: `You have been assigned the ${role} role on this content item`,
-    entityType: "content_item",
-    entityId: contentItemId,
-    actorId: assignedBy,
-    excludeActorFromRecipients: true,
-  });
+  await createNotifications(
+    {
+      recipientIds: [assignedUserId],
+      notificationType: "assignment",
+      title: `You were assigned as ${role} on "${contentTitle}"`,
+      body: `You have been assigned the ${role} role on this content item`,
+      entityType: "content_item",
+      entityId: contentItemId,
+      actorId: assignedBy,
+      excludeActorFromRecipients: true,
+    },
+    client
+  );
 }

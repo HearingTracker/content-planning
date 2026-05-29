@@ -2,7 +2,11 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
-import { notifyComment, notifyAssignment } from "@/lib/notifications/triggers";
+import { notifyComment } from "@/lib/notifications/triggers";
+import {
+  enqueueAssignmentNotifications,
+  cancelPendingAssignment,
+} from "@/lib/notifications/outbox";
 import type {
   ContentItem,
   ContentItemInput,
@@ -1086,29 +1090,14 @@ export async function addAssignment(
     .eq("id", input.user_id)
     .single();
 
-  // Trigger notification for the assigned user (don't await to avoid blocking response)
+  // Queue a debounced notification for the assigned user (skip self-assignment).
+  // The flush cron delivers it after the creator has finished editing.
   if (user && input.user_id !== user.id) {
-    (async () => {
-      try {
-        const { data: contentItem } = await supabase
-          .from("cp_content")
-          .select("title")
-          .eq("id", contentId)
-          .single();
-
-        if (contentItem) {
-          await notifyAssignment(
-            input.user_id,
-            contentId,
-            contentItem.title,
-            input.role,
-            user.id
-          );
-        }
-      } catch (err) {
-        console.error("Error triggering assignment notification:", err);
-      }
-    })();
+    await enqueueAssignmentNotifications(
+      contentId,
+      [{ userId: input.user_id, role: input.role }],
+      user.id
+    );
   }
 
   revalidatePath("/content");
@@ -1154,6 +1143,14 @@ export async function updateAssignments(
     data: { user },
   } = await supabase.auth.getUser();
 
+  // Snapshot who was already assigned so we can notify only newly-added users
+  // and cancel pending notifications for anyone removed.
+  const { data: existing } = await supabase
+    .from("cp_content_assignments")
+    .select("user_id")
+    .eq("content_id", contentId);
+  const existingUserIds = new Set((existing ?? []).map((a) => a.user_id));
+
   // Delete all existing assignments for this content item
   const { error: deleteError } = await supabase
     .from("cp_content_assignments")
@@ -1182,6 +1179,30 @@ export async function updateAssignments(
     if (insertError) {
       console.error("Error adding assignments:", insertError);
       return { success: false, error: insertError.message };
+    }
+  }
+
+  // Queue debounced notifications for newly-assigned users (skip self), and
+  // cancel any pending ones for users who were removed before delivery.
+  if (user) {
+    const newUserIds = new Set(assignments.map((a) => a.user_id));
+
+    const newlyAssigned = assignments.filter(
+      (a) => a.user_id !== user.id && !existingUserIds.has(a.user_id)
+    );
+    if (newlyAssigned.length > 0) {
+      await enqueueAssignmentNotifications(
+        contentId,
+        newlyAssigned.map((a) => ({ userId: a.user_id, role: a.role })),
+        user.id
+      );
+    }
+
+    const removedUserIds = [...existingUserIds].filter(
+      (id) => !newUserIds.has(id)
+    );
+    if (removedUserIds.length > 0) {
+      await cancelPendingAssignment(contentId, removedUserIds);
     }
   }
 

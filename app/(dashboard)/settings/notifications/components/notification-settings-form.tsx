@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Bell, Mail, Monitor, MessageSquare, AtSign, UserPlus } from "lucide-react";
+import { Bell, Mail, Monitor, MessageSquare, AtSign, UserPlus, CalendarClock } from "lucide-react";
 import { usePushNotifications } from "@/hooks/use-push-notifications";
 import { updateNotificationPreferences } from "../actions";
 import type { NotificationPreferences, EventPreferences } from "@/lib/notifications/types";
@@ -51,9 +51,10 @@ export function NotificationSettingsForm({
   };
 
   const handleEventToggle = (event: keyof EventPreferences) => {
+    const currentValue = preferences.event_preferences[event] ?? true;
     const newEventPrefs = {
       ...preferences.event_preferences,
-      [event]: !preferences.event_preferences[event],
+      [event]: !currentValue,
     };
     setPreferences((prev) => ({ ...prev, event_preferences: newEventPrefs }));
 
@@ -71,7 +72,7 @@ export function NotificationSettingsForm({
           ...prev,
           event_preferences: {
             ...prev.event_preferences,
-            [event]: !prev.event_preferences[event],
+            [event]: currentValue,
           },
         }));
       }
@@ -288,6 +289,24 @@ export function NotificationSettingsForm({
               id="event-assignment"
               checked={preferences.event_preferences.assignment}
               onCheckedChange={() => handleEventToggle("assignment")}
+              disabled={isPending || !preferences.notifications_enabled}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <CalendarClock className="size-5 text-muted-foreground" />
+              <div className="space-y-0.5">
+                <Label htmlFor="event-daily-digest">Daily Digest</Label>
+                <p className="text-sm text-muted-foreground">
+                  A weekday-morning email summarizing your open content tasks
+                </p>
+              </div>
+            </div>
+            <Checkbox
+              id="event-daily-digest"
+              checked={preferences.event_preferences.daily_digest ?? true}
+              onCheckedChange={() => handleEventToggle("daily_digest")}
               disabled={isPending || !preferences.notifications_enabled}
             />
           </div>

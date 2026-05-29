@@ -1,9 +1,12 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-// Routes that should bypass auth checks entirely
+// Routes that should bypass the Supabase session check entirely.
+// /api/cron is included because cron routes are invoked by Vercel (no user
+// session) and enforce their own CRON_SECRET bearer auth.
 const authRoutes = [
   "/api/auth",
+  "/api/cron",
   "/auth",
   "/login",
   "/signup",

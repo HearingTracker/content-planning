@@ -1,12 +1,14 @@
 export type NotificationType =
   | "comment_on_assigned"
   | "mention"
-  | "assignment";
+  | "assignment"
+  | "daily_digest";
 
 export interface EventPreferences {
   comment_on_assigned: boolean;
   mention: boolean;
   assignment: boolean;
+  daily_digest: boolean;
 }
 
 export interface NotificationPreferences {

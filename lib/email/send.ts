@@ -108,3 +108,21 @@ export async function sendNotificationEmail(
     html,
   });
 }
+
+/**
+ * Send a pre-rendered digest email (e.g. the daily outstanding-items summary).
+ * The caller builds the HTML body; `text` is a plain-text fallback.
+ */
+export async function sendDigestEmail(
+  to: string,
+  subject: string,
+  html: string,
+  text: string
+): Promise<EmailResult> {
+  return sendEmail({
+    to,
+    subject,
+    text,
+    html,
+  });
+}

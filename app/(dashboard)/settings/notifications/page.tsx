@@ -26,6 +26,7 @@ export default async function NotificationSettingsPage() {
       comment_on_assigned: true,
       mention: true,
       assignment: true,
+      daily_digest: true,
     } as EventPreferences,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
