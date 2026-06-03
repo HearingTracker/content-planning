@@ -14,6 +14,7 @@ import type { ContentItem, WorkflowStatus } from "./types";
 interface KanbanColumnProps {
   status: WorkflowStatus;
   items: ContentItem[];
+  activeId?: number | null;
   onItemClick: (item: ContentItem) => void;
   onEditAssignments?: (item: ContentItem) => void;
   onEditDates?: (item: ContentItem) => void;
@@ -26,6 +27,7 @@ interface KanbanColumnProps {
 export function KanbanColumn({
   status,
   items,
+  activeId = null,
   onItemClick,
   onEditAssignments,
   onEditDates,
@@ -46,6 +48,34 @@ export function KanbanColumn({
       new Date(i.due_date) < new Date() &&
       !i.workflow_status?.is_terminal
   ).length;
+
+  // Collapse empty columns to a narrow strip with just the color icon and
+  // (vertical) name. A column counts as empty even when it currently holds only
+  // the card being dragged, so it stays compressed throughout the drag — no
+  // expand-on-hover, no layout shift fighting your aim. You drop onto the
+  // stable strip (highlighted while a card is over it) and it expands only
+  // afterwards, once it actually contains an item.
+  const isEmpty = items.every((i) => i.id === activeId);
+  if (isEmpty) {
+    return (
+      <div
+        ref={setNodeRef}
+        title={status.name}
+        className={cn(
+          "flex flex-col items-center gap-2 bg-muted/50 rounded-lg min-w-[44px] w-[44px] h-full max-h-full py-3 transition-colors",
+          isOver && "bg-primary/10 ring-2 ring-inset ring-primary/50"
+        )}
+      >
+        <div
+          className="h-3 w-3 rounded-full shrink-0"
+          style={{ backgroundColor: status.color }}
+        />
+        <span className="text-sm font-medium text-muted-foreground [writing-mode:vertical-rl]">
+          {status.name}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col bg-muted/50 rounded-lg min-w-[280px] w-[280px] h-full max-h-full">

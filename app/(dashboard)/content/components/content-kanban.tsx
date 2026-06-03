@@ -5,6 +5,8 @@ import {
   DndContext,
   DragOverlay,
   closestCorners,
+  pointerWithin,
+  MeasuringStrategy,
   KeyboardSensor,
   PointerSensor,
   useSensor,
@@ -12,6 +14,7 @@ import {
   DragStartEvent,
   DragEndEvent,
   DragOverEvent,
+  CollisionDetection,
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates, arrayMove } from "@dnd-kit/sortable";
 import { KanbanColumn } from "./kanban-column";
@@ -108,6 +111,16 @@ export function ContentKanban({
     })
   );
 
+  // Reset optimistic drag state whenever the source items change (e.g. a
+  // filter is applied/cleared, or a refetch lands). Without this, the board
+  // keeps showing the stale snapshot captured at the end of the last drag and
+  // ignores filter changes. `items` is stable during an active drag (the
+  // reorder mutation only fires on drag end), so this never clobbers the
+  // in-progress optimistic state.
+  useEffect(() => {
+    setLocalItems(null);
+  }, [items]);
+
   // Use local items during drag, otherwise use props
   const displayItems = localItems ?? items;
 
@@ -129,6 +142,32 @@ export function ContentKanban({
     });
     return grouped;
   }, [displayItems, statuses]);
+
+  // Prefer an empty (collapsed) column when the pointer is directly within its
+  // narrow strip. closestCorners compares corner distances, so it can never
+  // select a 44px-wide collapsed column against full-width neighbors — making
+  // empty columns impossible to drop into. For that one case we use the
+  // pointer position; everything else falls back to closestCorners, preserving
+  // the existing card-reordering and non-empty-column behavior.
+  //
+  // "Empty" ignores the card currently being dragged: once handleDragOver
+  // moves the active card into a target column, the column must still count as
+  // empty so the strategy doesn't flip back to closestCorners and bounce the
+  // card out — which would oscillate and exceed the max update depth.
+  const collisionDetection = useCallback<CollisionDetection>(
+    (args) => {
+      const emptyColumnHit = pointerWithin(args).find((hit) => {
+        if (typeof hit.id !== "string" || !hit.id.startsWith("column-")) {
+          return false;
+        }
+        const statusId = Number(hit.id.replace("column-", ""));
+        const columnItems = itemsByStatus[statusId] ?? [];
+        return columnItems.every((i) => i.id === activeId);
+      });
+      return emptyColumnHit ? [emptyColumnHit] : closestCorners(args);
+    },
+    [itemsByStatus, activeId]
+  );
 
   const activeItem = useMemo(
     () => (activeId ? displayItems.find((i) => i.id === activeId) : null),
@@ -410,7 +449,8 @@ export function ContentKanban({
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCorners}
+      collisionDetection={collisionDetection}
+      measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
@@ -428,6 +468,7 @@ export function ContentKanban({
               key={status.id}
               status={status}
               items={itemsByStatus[status.id] || []}
+              activeId={activeId}
               onItemClick={onItemClick}
               onEditAssignments={onEditAssignments}
               onEditDates={onEditDates}
