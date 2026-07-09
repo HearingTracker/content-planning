@@ -52,6 +52,7 @@ function buildFormData(
   if (item) {
     return {
       title: item.title,
+      description: item.description,
       content_type_id: item.content_type?.id || null,
       workflow_status_id: item.workflow_status?.id || null,
       campaign_id: item.campaign?.id || null,
@@ -60,12 +61,15 @@ function buildFormData(
       scheduled_date: item.scheduled_date,
       scheduled_time: item.scheduled_time,
       notes: item.notes,
+      content_goals: item.content_goals,
+      source: item.source,
       storyblok_url: item.storyblok_url,
       body: item.body,
     };
   }
   return {
     title: initialData?.title || "",
+    description: initialData?.description || null,
     content_type_id: initialData?.content_type_id || null,
     workflow_status_id: initialData?.workflow_status_id || null,
     campaign_id: initialData?.campaign_id || null,
@@ -74,6 +78,8 @@ function buildFormData(
     scheduled_date: initialData?.scheduled_date || null,
     scheduled_time: initialData?.scheduled_time || null,
     notes: initialData?.notes || null,
+    content_goals: initialData?.content_goals || null,
+    source: initialData?.source || null,
     storyblok_url: initialData?.storyblok_url || null,
     body: initialData?.body || null,
   };
@@ -365,8 +371,9 @@ export function ContentEditModal({
               <div className="flex-1 overflow-y-auto p-4">
                 <TabsContent value="content" className="mt-0 h-full">
                   <ContentTab
-                    body={formData.body || null}
-                    onChange={handleBodyChange}
+                    formData={formData}
+                    onChange={handleFormChange}
+                    onBodyChange={handleBodyChange}
                   />
                 </TabsContent>
 

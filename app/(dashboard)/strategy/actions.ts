@@ -582,6 +582,7 @@ export async function createBrief(
       description: input.summary, // summary maps to description
       stage: "brief",
       brief_status: input.status || "draft",
+      source: input.source,
       target_audience: input.target_audience,
       content_goals: input.content_goals,
       tone_and_style: input.tone_and_style,

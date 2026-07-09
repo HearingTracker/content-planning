@@ -327,6 +327,7 @@ export async function createContentItem(
       scheduled_date: input.scheduled_date,
       scheduled_time: input.scheduled_time,
       notes: input.notes,
+      source: input.source,
       storyblok_url: input.storyblok_url,
       body: input.body,
       // SEO fields can be set from input if provided
@@ -372,6 +373,7 @@ export async function updateContentItem(
       ...(input.scheduled_date !== undefined && { scheduled_date: input.scheduled_date }),
       ...(input.scheduled_time !== undefined && { scheduled_time: input.scheduled_time }),
       ...(input.notes !== undefined && { notes: input.notes }),
+      ...(input.source !== undefined && { source: input.source }),
       ...(input.storyblok_url !== undefined && { storyblok_url: input.storyblok_url }),
       ...(input.body !== undefined && { body: input.body }),
       // SEO fields

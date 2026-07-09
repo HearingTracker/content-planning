@@ -135,12 +135,12 @@ export default function ContentPage() {
   useEffect(() => {
     if (urlState.brief_id && !editModalOpen) {
       // In the unified model, we just promote the brief to content stage
-      promoteContent(urlState.brief_id, "content").then((result) => {
+      promoteContent(urlState.brief_id, "content").then(async (result) => {
         if (result.success) {
-          // Refetch items to show the newly promoted content
-          refetchItems();
-          // Find and open the promoted item
-          const promotedItem = items.find((i) => i.id === urlState.brief_id);
+          // The promoted row was a brief, so it is absent from the current
+          // `items`; open it off the refetched list rather than the stale one.
+          const { data: refreshed } = await refetchItems();
+          const promotedItem = refreshed?.find((i) => i.id === urlState.brief_id);
           if (promotedItem) {
             setEditingItem(promotedItem);
             setEditModalOpen(true);
@@ -150,7 +150,7 @@ export default function ContentPage() {
         setUrlState({ brief_id: null });
       });
     }
-  }, [urlState.brief_id, editModalOpen, setUrlState, refetchItems, items]);
+  }, [urlState.brief_id, editModalOpen, setUrlState, refetchItems]);
 
   // Clear URL params when modal closes
   const handleModalOpenChange = useCallback(

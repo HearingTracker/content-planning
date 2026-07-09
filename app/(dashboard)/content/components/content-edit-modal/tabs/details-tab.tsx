@@ -161,14 +161,14 @@ export function DetailsTab({
         </div>
       </div>
 
-      {/* Notes */}
+      {/* Summary — also rendered as the preview line on the Kanban card */}
       <div className="grid gap-2">
-        <Label htmlFor="notes">Notes</Label>
+        <Label htmlFor="description">Summary</Label>
         <Textarea
-          id="notes"
-          value={formData.notes || ""}
-          onChange={(e) => onChange({ notes: e.target.value || null })}
-          placeholder="Add any notes or context..."
+          id="description"
+          value={formData.description || ""}
+          onChange={(e) => onChange({ description: e.target.value || null })}
+          placeholder="A short summary of this content..."
           rows={3}
         />
       </div>

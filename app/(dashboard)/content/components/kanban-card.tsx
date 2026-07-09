@@ -156,10 +156,10 @@ export function KanbanCard({
           </ContentItemMenu>
         </div>
 
-        {/* Notes (if present) */}
-        {item.notes && (
+        {/* Summary (if present) */}
+        {item.description && (
           <p className="text-xs text-muted-foreground mt-1.5 ml-6 line-clamp-2 break-all">
-            {item.notes}
+            {item.description}
           </p>
         )}
 
